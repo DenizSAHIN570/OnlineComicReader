@@ -31,6 +31,7 @@ export interface ComicBook {
 	currentPage: number;
 	totalPages: number;
 	lastRead: Date;
+	coverThumbnail?: string; // Base64 encoded thumbnail
 }
 
 export interface ArchiveEntry {

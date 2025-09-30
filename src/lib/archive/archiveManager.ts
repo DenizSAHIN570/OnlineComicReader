@@ -1,5 +1,5 @@
-// Universal Archive Manager for OnlineCbrReader
-// Supports ZIP (CBZ) and RAR (CBR) files using uncompress.js library
+// Archive Manager for OnlineCbrReader
+// Supports ZIP (CBZ) and RAR (CBR) files using libarchive.js
 
 import type { ComicPage } from '../../types/comic.js';
 
@@ -25,48 +25,35 @@ export interface Archive {
 	handle: any;
 }
 
-class UniversalArchiveManager {
-	private isLibraryLoaded = false;
-	private loadingPromise: Promise<void> | null = null;
+class ArchiveManager {
+	private Archive: any = null;
+	private isInitialized = false;
+	private initPromise: Promise<void> | null = null;
 
 	constructor() {}
 
-	private async loadLibraries(): Promise<void> {
-		if (this.isLibraryLoaded) return;
-		if (this.loadingPromise) return this.loadingPromise;
+	private async initialize(): Promise<void> {
+		if (this.isInitialized) return;
+		if (this.initPromise) return this.initPromise;
 
-		this.loadingPromise = new Promise((resolve, reject) => {
+		this.initPromise = (async () => {
 			try {
-				// Load libarchive.js for archive handling
-				const script = document.createElement('script');
-				script.src = '/libarchive/libarchive.js';
-				script.onload = () => {
-					// Initialize Archive with correct worker URL
-					const Archive = (window as any).Archive;
-					if (Archive) {
-						Archive.init({
-							workerUrl: '/libarchive/worker-bundle.js'
-						}).then(() => {
-							this.isLibraryLoaded = true;
-							console.log('UniversalArchiveManager: libarchive.js initialized');
-							resolve();
-						}).catch((error: any) => {
-							reject(new Error(`Failed to initialize libarchive.js: ${error.message}`));
-						});
-					} else {
-						reject(new Error('Archive not found in global scope'));
-					}
-				};
-				script.onerror = () => {
-					reject(new Error('Failed to load libarchive.js'));
-				};
-				document.head.appendChild(script);
-			} catch (error) {
-				reject(error);
+				// Dynamic import to avoid bundling issues
+				const { Archive } = await import('libarchive.js');
+				this.Archive = Archive;
+				
+				await Archive.init({
+					workerUrl: '/libarchive/worker-bundle.js'
+				});
+				
+				this.isInitialized = true;
+				console.log('ArchiveManager: libarchive.js initialized');
+			} catch (error: any) {
+				throw new Error(`Failed to initialize libarchive.js: ${error.message}`);
 			}
-		});
+		})();
 
-		return this.loadingPromise;
+		return this.initPromise;
 	}
 
 	private isImageFile(filename: string): boolean {
@@ -86,17 +73,13 @@ class UniversalArchiveManager {
 	}
 
 	async openArchive(file: File): Promise<ComicPage[]> {
-		await this.loadLibraries();
+		await this.initialize();
 
 		return new Promise(async (resolve, reject) => {
 			try {
-				const Archive = (window as any).Archive;
-				if (!Archive) {
-					throw new Error('Archive library not loaded');
-				}
 
 				// Open the archive
-				const archive = await Archive.open(file);
+				const archive = await this.Archive.open(file);
 				console.log(`Opened archive: ${file.name}`);
 
 				// Get file listing
@@ -215,4 +198,4 @@ class UniversalArchiveManager {
 	}
 }
 
-export default UniversalArchiveManager;
+export default ArchiveManager;

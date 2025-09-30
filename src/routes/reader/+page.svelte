@@ -2,13 +2,13 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { currentComic, currentPageIndex, isLoading, error, currentFile } from '$lib/store/session.js';
-	import UniversalArchiveManager from '$lib/archive/universalArchiveManager.js';
+	import ArchiveManager from '$lib/archive/archiveManager.js';
 	import type { ComicPage } from '../../types/comic.js';
 	import { IndexedDBStore } from '$lib/store/indexeddb.js';
 	import Viewer from '$lib/ui/Viewer.svelte';
 	import type { ComicBook } from '../../types/comic.js';
 	
-	let archiveManager: UniversalArchiveManager;
+	let archiveManager: ArchiveManager;
 	let dbStore: IndexedDBStore;
 	let comic: ComicBook | null = null;
 	let file: File | null = null;
@@ -25,7 +25,7 @@
 	
 	onMount(async () => {
 		// Initialize services
-		archiveManager = new UniversalArchiveManager();
+		archiveManager = new ArchiveManager();
 		dbStore = new IndexedDBStore();
 		await dbStore.init();
 		
@@ -178,7 +178,7 @@
 </script>
 
 <svelte:head>
-	<title>{comic?.title || 'Reading'} - Online CBR Reader</title>
+	<title>{comic?.title || 'Reading'} - Online Comic Reader</title>
 </svelte:head>
 
 {#if $error}
