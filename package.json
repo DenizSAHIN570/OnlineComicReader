@@ -11,8 +11,7 @@
 		"lint": "prettier --plugin-search-dir . --check . && eslint .",
 		"format": "prettier --plugin-search-dir . --write .",
 		"postinstall": "npm run setup:libarchive",
-		"setup:libarchive": "mkdir -p static/libarchive && cp -r node_modules/libarchive.js/dist/* static/libarchive/ 2>/dev/null || echo 'libarchive will be copied after install'",
-		"deploy": "gh-pages -d build"
+		"setup:libarchive": "mkdir -p static/libarchive && cp -r node_modules/libarchive.js/dist/* static/libarchive/ 2>/dev/null || echo 'libarchive will be copied after install'"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-auto": "^3.2.5",
