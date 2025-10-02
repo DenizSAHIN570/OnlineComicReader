@@ -1,19 +1,21 @@
-# Online CBR Reader
+Disclaimer
 
-A fast, modern browser-based comic book reader built with SvelteKit and TypeScript. Optimized for CBZ/ZIP files with a sleek AMOLED dark interface.
+This application is a comic book reader. It does not host, distribute, or include any copyrighted comic book files.  
+Users are solely responsible for the content they choose to open with this software.  
+The maintainers and contributors accept no liability for misuse or distribution of third-party content.
+
+# Online Comic Reader
+
+A fast, modern browser-based comic book reader built with SvelteKit and TypeScript.
 
 ## Features
 
-- **Lightning-Fast CBZ/ZIP Support**: Uses `fflate` for instant extraction in Web Workers
 - **Sleek AMOLED Interface**: Modern dark UI with book shelf design and gradient accents
-- **Advanced Zoom & Pan**: Smooth zoom (10%-500%), drag to pan with smart borders, scroll wheel controls
-- **View Mode Persistence**: Fit-width/fit-height modes persist when changing pages
 - **Smart Caching**: IndexedDB-based caching for instant page loading
 - **Reading Progress**: Automatically saves your reading position
-- **Multiple View Modes**: Fit-to-width, fit-to-height, and original size with zoom
 - **Keyboard Shortcuts**: Arrow keys, spacebar, Home/End navigation, zoom controls
+- **PWA**: PWA Support for offline use
 - **Mobile Friendly**: Responsive design works on tablets and phones
-- **CBR/RAR Awareness**: Provides helpful guidance for converting CBR files to CBZ format
 
 ## Quick Start
 
@@ -29,12 +31,12 @@ A fast, modern browser-based comic book reader built with SvelteKit and TypeScri
 
 3. **Open your browser** to `http://localhost:5173`
 
-4. **Drop a CBZ file** or click to select one and start reading!
+4. **Drop a CBZ/CBR file** or click to select one and start reading!
 
 ## Usage
 
 ### Opening Comics
-- Drag and drop a `.cbz` or `.zip` file onto the landing page
+- Drag and drop a `.cbz` or `.cbr` file onto the landing page
 - Or click the drop zone to select a file using the file picker
 - Recently opened comics will appear in your library shelf
 - **New files**: Navigate directly to reading - no extra steps!
@@ -88,43 +90,8 @@ Archive processing runs in Web Workers to prevent UI blocking:
 ## File Support
 
 ### Fully Supported
-- ✅ **CBZ** (Comic Book ZIP) - Perfect support with instant loading
-- ✅ **ZIP** files containing images - Perfect support with instant loading
+- ✅ **CBZ/CBR** (Comic Book ZIP) - Perfect support with instant loading
 
-### Limited Support
-- ⚠️ **CBR** (Comic Book RAR) - Browser limitations due to WASM constraints
-- ⚠️ **RAR** files - Browser limitations due to WASM constraints
-
-### Recommended Workflow for CBR Files
-
-**Option 1: Convert CBR to CBZ**
-1. Download a tool like [CBR to CBZ Converter](https://convertio.co/cbr-cbz/)
-2. Upload your CBR file and convert to CBZ
-3. Use the converted CBZ file for perfect compatibility
-
-**Option 2: Manual Conversion**
-1. Rename `.cbr` file to `.rar`
-2. Extract using WinRAR, 7-Zip, or similar
-3. Select all images and create a new ZIP file
-4. Rename the ZIP to `.cbz`
-
-**Why CBZ is better:**
-- ⚡ Faster loading (no WASM overhead)
-- 🔄 Better browser compatibility
-- 💾 Smaller memory footprint
-- 🎯 More reliable extraction
-
-### Coming Soon
-- 🔄 **ComicInfo.xml** metadata parsing
-- 🔄 **Two-page spread** mode
-- 🔄 **Thumbnail navigation** panel
-
-## Browser Compatibility
-
-- **Chrome/Edge**: Full support including File System Access API
-- **Firefox**: Full support with standard file picker
-- **Safari**: Full support with standard file picker
-- **Mobile Browsers**: Responsive design, touch/swipe navigation
 
 ## Development
 
@@ -161,35 +128,6 @@ src/
 - **Smart Caching**: IndexedDB provides persistent caching across sessions
 - **Canvas Rendering**: Uses `createImageBitmap` for efficient decoding
 
-## Troubleshooting
-
-### CBR/RAR File Issues
-
-If you try to open CBR/RAR files, you'll see a helpful error message explaining the limitations. Here's what to do:
-
-**Quick Solution: Convert to CBZ**
-1. Use an online converter like [convertio.co](https://convertio.co/cbr-cbz/)
-2. Upload your CBR file and download the CBZ version
-3. Use the CBZ file - it will load instantly!
-
-**Manual Conversion:**
-1. Rename `.cbr` to `.rar` and extract with any archive tool
-2. Select all images and create a new ZIP file
-3. Rename the ZIP to `.cbz`
-
-### General Issues
-
-- **File re-selection required:** This only happens with recent comics due to browser security - fresh uploads work seamlessly
-- **Pages not loading:** Refresh and re-select the file
-- **Large files slow:** This is expected for files over 100MB
-- **Browser crashes:** Try smaller files or close other tabs to free memory
-
-## Limitations
-
-- **File Re-selection**: Browser security prevents persistent file access - only affects library comics after restart
-- **Large Archives**: Very large ZIP files (>100MB) may take time to process initially
-- **CBR/RAR Files**: Limited browser support due to WASM constraints - conversion to CBZ recommended
-
 ## Contributing
 
 This is a feature-complete implementation. Planned improvements:
@@ -197,7 +135,7 @@ This is a feature-complete implementation. Planned improvements:
 - ComicInfo.xml metadata parsing
 - Two-page spread mode
 - Thumbnail strip navigation
-- PWA/offline support
+- PWA/offline support (done)
 
 ## License
 
