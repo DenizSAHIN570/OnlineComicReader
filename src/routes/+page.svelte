@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import ArchiveManager from '$lib/archive/archiveManager.js';
 	import { IndexedDBStore } from '$lib/store/indexeddb.js';
+	import { comicStorage, type ComicMetadata } from '$lib/storage/comicStorage.js';
 	import { setComic, setLoading, setError, clearError } from '$lib/store/session.js';
 	import type { ComicBook } from '../types/comic.js';
 	
@@ -10,19 +11,28 @@
 	let dragActive = false;
 	let archiveManager: ArchiveManager | null = null;
 	let dbStore: IndexedDBStore;
-	let recentComics: ComicBook[] = [];
+	let recentComics: ComicMetadata[] = [];
+	let storageInfo = { usage: 0, quota: 0, percentage: 0 };
 	
 	onMount(async () => {
-		// Don't initialize archiveManager here - create on demand
 		dbStore = new IndexedDBStore();
 		
 		try {
 			await dbStore.init();
-			recentComics = await dbStore.getAllComics();
+			await comicStorage.init();
+			
+			// Load comics from the storage system
+			await loadComics();
 		} catch (error) {
-			console.error('Failed to initialize database:', error);
+			console.error('Failed to initialize:', error);
 		}
 	});
+	
+	async function loadComics() {
+		recentComics = await comicStorage.getAllComics();
+		recentComics.sort((a, b) => b.lastAccessed - a.lastAccessed);
+		storageInfo = await comicStorage.getStorageEstimate();
+	}
 	
 	onDestroy(() => {
 		if (archiveManager) {
@@ -63,6 +73,14 @@
 		input.value = '';
 	}
 	
+	// Clean pages array to remove proxy objects and make it serializable
+	function cleanPages(pages: any[]) {
+		return pages.map(p => ({
+			filename: p.filename,
+			index: p.index
+		}));
+	}
+	
 	async function handleFile(file: File) {
 		// Initialize archive manager on demand
 		if (!archiveManager) {
@@ -83,52 +101,65 @@
 			// Generate comic ID from filename and size
 			const comicId = `${file.name}-${file.size}`;
 			
-			// Check if we already have this comic cached
-			let comic = await dbStore.getComic(comicId);
+			// Check if we already have this comic in storage
+			const existingStoredComic = await comicStorage.getComic(comicId);
 			
-			if (!comic) {
-				// Open archive and get pages
-				const pages = await archiveManager.openArchive(file);
-				
-				// Load the first page to create a thumbnail
-				let coverThumbnail: string | undefined;
-				if (pages.length > 0) {
-					try {
-						await archiveManager.loadPage(pages[0]);
-						if (pages[0].blob) {
-							// Create thumbnail
-							coverThumbnail = await createThumbnail(pages[0].blob);
-						}
-					} catch (err) {
-						console.warn('Failed to create thumbnail:', err);
-					}
-				}
-				
-				// Create comic book object with clean pages (no proxy objects)
-				comic = {
-					id: comicId,
-					title: file.name.replace(/\.(cbz|zip|cbr|rar)$/i, ''),
-					filename: file.name,
-					pages: pages.map(p => ({
-						filename: p.filename,
-						index: p.index
-					})),
-					currentPage: 0,
-					totalPages: pages.length,
-					lastRead: new Date(),
-					coverThumbnail
-				};
-				
-				// Save to database
-				await dbStore.saveComic(comic);
-			} else {
-				// Update last read time
-				comic.lastRead = new Date();
-				await dbStore.saveComic(comic);
-				
-				// Reopen the archive
-				await archiveManager.openArchive(file);
+			if (existingStoredComic) {
+				// Comic already exists in storage, just open it
+				console.log('Comic already in storage, opening...');
+				await openExistingComic(comicId, file);
+				return;
 			}
+			
+			// New comic, process it fully
+			console.log('New comic, processing...');
+			
+			// Open archive and get pages
+			const pages = await archiveManager.openArchive(file);
+			console.log(`Loaded ${pages.length} pages from archive`);
+			
+			if (pages.length === 0) {
+				throw new Error('No images found in archive. The file may be corrupted or use an unsupported RAR version.');
+			}
+			
+			// Load the first page to create a thumbnail
+			let thumbnail: string | undefined;
+			if (pages.length > 0) {
+				try {
+					await archiveManager.loadPage(pages[0]);
+					if (pages[0].blob) {
+						console.log('Creating thumbnail...');
+						thumbnail = await createThumbnail(pages[0].blob);
+						console.log('Thumbnail created successfully');
+					}
+				} catch (err) {
+					console.error('Failed to create thumbnail:', err);
+				}
+			}
+			
+			// Create comic book object with CLEAN pages (no proxy objects)
+			const cleanedPages = cleanPages(pages);
+			const comic: ComicBook = {
+				id: comicId,
+				title: file.name.replace(/\.(cbz|zip|cbr|rar)$/i, ''),
+				filename: file.name,
+				pages: cleanedPages,
+				currentPage: 0,
+				totalPages: pages.length,
+				lastRead: new Date(),
+				coverThumbnail: thumbnail
+			};
+			
+			// Save metadata to database
+			await dbStore.saveComic(comic);
+			console.log('Metadata saved');
+			
+			// Save the full file for offline access (with thumbnail)
+			await comicStorage.saveComic(file, thumbnail);
+			console.log('Comic saved to offline storage with thumbnail');
+			
+			// Reload the comics list
+			await loadComics();
 			
 			// Set current comic and navigate to reader
 			setComic(comic, file);
@@ -138,6 +169,68 @@
 			console.error('Failed to process file:', error);
 			setError(error instanceof Error ? error.message : 'Failed to process file');
 		} finally {
+			setLoading(false);
+		}
+	}
+	
+	async function openExistingComic(comicId: string, file: File) {
+		try {
+			// Initialize archive manager if needed
+			if (!archiveManager) {
+				archiveManager = new ArchiveManager();
+			}
+			
+			// Load the archive pages
+			const pages = await archiveManager.openArchive(file);
+			console.log(`Reopened archive with ${pages.length} pages`);
+			
+			if (pages.length === 0) {
+				throw new Error('No images found in archive. The file may be corrupted or use an unsupported RAR version.');
+			}
+			
+			// Get existing metadata
+			let comic = await dbStore.getComic(comicId);
+			
+			if (!comic) {
+				// Get thumbnail from storage
+				const storedComic = await comicStorage.getComic(comicId);
+				
+				// Create metadata with CLEAN pages
+				const cleanedPages = cleanPages(pages);
+				comic = {
+					id: comicId,
+					title: file.name.replace(/\.(cbz|zip|cbr|rar)$/i, ''),
+					filename: file.name,
+					pages: cleanedPages,
+					currentPage: 0,
+					totalPages: pages.length,
+					lastRead: new Date(),
+					coverThumbnail: storedComic?.thumbnail
+				};
+				
+				await dbStore.saveComic(comic);
+			} else {
+				// Update pages array with CLEAN pages and last read time
+				comic.pages = cleanPages(pages);
+				comic.totalPages = pages.length;
+				comic.lastRead = new Date();
+				await dbStore.saveComic(comic);
+			}
+			
+			// Update last accessed in storage (won't create duplicate)
+			await comicStorage.updateLastAccessed(comicId);
+			
+			// Reload comics list
+			await loadComics();
+			
+			// Set current comic and navigate to reader
+			setComic(comic, file);
+			setLoading(false);
+			await goto('/reader');
+			
+		} catch (error) {
+			console.error('Failed to open existing comic:', error);
+			setError(error instanceof Error ? error.message : 'Failed to open comic');
 			setLoading(false);
 		}
 	}
@@ -183,7 +276,7 @@
 						} else {
 							reject(new Error('Failed to create thumbnail'));
 						}
-					}, 'image/jpeg', 0.8);
+					}, 'image/jpeg', 0.7);
 				} else {
 					reject(new Error('Failed to get canvas context'));
 				}
@@ -200,10 +293,66 @@
 		});
 	}
 	
-	async function openRecentComic(comic: ComicBook) {
-		// Set comic without file - user will need to re-select file
-		setComic(comic);
-		await goto('/reader');
+	async function openRecentComic(comicMeta: ComicMetadata) {
+		try {
+			setLoading(true, 'Loading comic...');
+			
+			// Get the stored comic file
+			const storedComic = await comicStorage.getComic(comicMeta.id);
+			if (!storedComic) {
+				alert('Comic not found in storage');
+				setLoading(false);
+				return;
+			}
+
+			// Create a File object from the stored blob
+			const file = new File([storedComic.fileData], storedComic.filename);
+			
+			// Use the existing openExistingComic function
+			await openExistingComic(comicMeta.id, file);
+			
+		} catch (error) {
+			console.error('Failed to open comic:', error);
+			setLoading(false);
+			alert('Failed to open comic: ' + (error instanceof Error ? error.message : 'Unknown error'));
+		}
+	}
+	
+	async function deleteComic(comicMeta: ComicMetadata, event: Event) {
+		event.stopPropagation(); // Prevent opening the comic
+		
+		if (confirm(`Delete "${comicMeta.filename}" from library?`)) {
+			try {
+				// Delete from storage
+				await comicStorage.deleteComic(comicMeta.id);
+				
+				// Reload the list
+				await loadComics();
+			} catch (error) {
+				console.error('Failed to delete comic:', error);
+				alert('Failed to delete comic');
+			}
+		}
+	}
+	
+	function formatFileSize(bytes: number): string {
+		if (bytes === 0) return '0 Bytes';
+		const k = 1024;
+		const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+		const i = Math.floor(Math.log(bytes) / Math.log(k));
+		return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+	}
+	
+	function formatDate(timestamp: number): string {
+		const date = new Date(timestamp);
+		const now = new Date();
+		const diff = now.getTime() - date.getTime();
+		const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+
+		if (days === 0) return 'Today';
+		if (days === 1) return 'Yesterday';
+		if (days < 7) return `${days} days ago`;
+		return date.toLocaleDateString();
 	}
 	
 	function triggerFileInput() {
@@ -217,7 +366,19 @@
 
 <main class="container">
 	<header>
-		<h1>Online Comic Reader</h1>
+		<div class="header-content">
+			<h1>Online Comic Reader</h1>
+			{#if recentComics.length > 0}
+				<div class="storage-info">
+					<span class="storage-text">
+						{formatFileSize(storageInfo.usage)} / {formatFileSize(storageInfo.quota)}
+					</span>
+					<div class="storage-bar">
+						<div class="storage-fill" style="width: {Math.min(storageInfo.percentage, 100)}%"></div>
+					</div>
+				</div>
+			{/if}
+		</div>
 	</header>
 	
 	{#if recentComics.length > 0}
@@ -228,7 +389,7 @@
 			</div>
 			<div class="bookshelf">
 				<div class="shelf-row">
-					{#each recentComics.slice(0, 8) as comic (comic.id)}
+					{#each recentComics.slice(0, 12) as comic (comic.id)}
 						<div 
 							class="comic-book" 
 							role="button"
@@ -237,8 +398,8 @@
 							on:keydown={(e) => e.key === 'Enter' && openRecentComic(comic)}
 						>
 							<div class="comic-cover">
-								{#if comic.coverThumbnail}
-									<img src={comic.coverThumbnail} alt={comic.title} />
+								{#if comic.thumbnail}
+									<img src={comic.thumbnail} alt={comic.filename} />
 								{:else}
 									<div class="placeholder-cover">
 										<div class="placeholder-icon">
@@ -247,18 +408,26 @@
 												<polyline points="14,2 14,8 20,8" stroke="currentColor" stroke-width="1.5"/>
 											</svg>
 										</div>
-										<div class="placeholder-title">{comic.title}</div>
+										<div class="placeholder-title">{comic.filename.replace(/\.(cbz|zip|cbr|rar)$/i, '')}</div>
 									</div>
 								{/if}
-								<div class="reading-progress">
-									<div class="progress-bar">
-										<div class="progress-fill" style="width: {((comic.currentPage + 1) / comic.totalPages) * 100}%"></div>
-									</div>
-								</div>
+								<button 
+									class="delete-btn"
+									on:click={(e) => deleteComic(comic, e)}
+									title="Delete comic"
+								>
+									<svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+										<path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+									</svg>
+								</button>
 							</div>
 							<div class="comic-info">
-								<div class="comic-title">{comic.title}</div>
-								<div class="comic-pages">{comic.currentPage + 1} / {comic.totalPages}</div>
+								<div class="comic-title">{comic.filename}</div>
+								<div class="comic-meta">
+									<span>{formatFileSize(comic.fileSize)}</span>
+									<span>•</span>
+									<span>{formatDate(comic.lastAccessed)}</span>
+								</div>
 							</div>
 						</div>
 					{/each}
@@ -319,7 +488,7 @@
 	:global(body) {
 		margin: 0;
 		padding: 0;
-		background: #000000; /* AMOLED black */
+		background: #000000;
 	}
 
 	.container {
@@ -327,7 +496,7 @@
 		margin: 0 auto;
 		padding: 2rem;
 		min-height: 100vh;
-		background: #000000; /* AMOLED black */
+		background: #000000;
 		color: #ffffff;
 		display: flex;
 		flex-direction: column;
@@ -339,12 +508,43 @@
 		margin-bottom: 2rem;
 	}
 	
+	.header-content {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+	
 	header h1 {
 		font-size: 1.5rem;
 		font-weight: 600;
 		margin: 0;
-		color: #ff6600; /* Bright orange */
-		text-align: center;
+		color: #ff6600;
+	}
+	
+	.storage-info {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-end;
+		gap: 0.25rem;
+	}
+	
+	.storage-text {
+		font-size: 0.75rem;
+		color: #666;
+	}
+	
+	.storage-bar {
+		width: 120px;
+		height: 4px;
+		background: #111;
+		border-radius: 2px;
+		overflow: hidden;
+	}
+	
+	.storage-fill {
+		height: 100%;
+		background: #ff6600;
+		transition: width 0.3s ease;
 	}
 	
 	.empty-state {
@@ -605,7 +805,7 @@
 		flex-direction: column;
 		align-items: center;
 		justify-content: center;
-		background: linear-gradient(135deg, #ff6600 0%, #ff8833 100%); /* Orange gradient */
+		background: linear-gradient(135deg, #ff6600 0%, #ff8833 100%);
 		color: white;
 		padding: 1rem;
 		text-align: center;
@@ -627,29 +827,32 @@
 		-webkit-box-orient: vertical;
 	}
 	
-	.reading-progress {
+	.delete-btn {
 		position: absolute;
-		bottom: 0;
-		left: 0;
-		right: 0;
-		padding: 0.5rem;
-		background: linear-gradient(to top, rgba(0, 0, 0, 0.9), transparent);
-		z-index: 1;
+		top: 0.5rem;
+		right: 0.5rem;
+		background: rgba(0, 0, 0, 0.8);
+		border: 1px solid rgba(255, 255, 255, 0.1);
+		color: #ff4444;
+		width: 32px;
+		height: 32px;
+		border-radius: 4px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		cursor: pointer;
+		opacity: 0;
+		transition: all 0.2s ease;
+		z-index: 3;
 	}
 	
-	.reading-progress .progress-bar {
-		height: 3px;
-		background: rgba(255, 255, 255, 0.2);
-		border-radius: 2px;
-		overflow: hidden;
+	.comic-book:hover .delete-btn {
+		opacity: 1;
 	}
 	
-	.reading-progress .progress-fill {
-		height: 100%;
-		background: linear-gradient(90deg, #ff6600 0%, #ff8833 100%); /* Orange gradient */
-		border-radius: 2px;
-		transition: width 0.3s ease;
-		box-shadow: 0 0 5px rgba(255, 102, 0, 0.5);
+	.delete-btn:hover {
+		background: rgba(255, 68, 68, 0.2);
+		border-color: #ff4444;
 	}
 	
 	.comic-info {
@@ -667,11 +870,14 @@
 		text-overflow: ellipsis;
 	}
 	
-	.comic-info .comic-pages {
-		font-size: 0.75rem;
+	.comic-info .comic-meta {
+		font-size: 0.7rem;
 		color: #666;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.5rem;
 	}
-
 	
 	@media (max-width: 768px) {
 		.container {
@@ -714,8 +920,18 @@
 			font-size: 0.75rem;
 		}
 		
-		.comic-info .comic-pages {
+		.comic-info .comic-meta {
 			font-size: 0.65rem;
+		}
+		
+		.header-content {
+			flex-direction: column;
+			gap: 1rem;
+			align-items: flex-start;
+		}
+		
+		.storage-info {
+			align-items: flex-start;
 		}
 	}
 </style>
