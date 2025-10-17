@@ -1,4 +1,4 @@
-Disclaimer
+# Disclaimer
 
 This application is a comic book reader. It does not host, distribute, or include any copyrighted comic book files.  
 Users are solely responsible for the content they choose to open with this software.  
@@ -6,136 +6,62 @@ The maintainers and contributors accept no liability for misuse or distribution 
 
 # Online Comic Reader
 
-A fast, modern browser-based comic book reader built with SvelteKit and TypeScript.
+Online Comic Reader is a SvelteKit application for reading CBZ/CBR comics directly in the browser. It focuses on fast archive extraction, an immersive viewer, and seamless device persistence so you can pick up exactly where you left off.
 
 ## Features
 
-- **Sleek AMOLED Interface**: Modern dark UI with book shelf design and gradient accents
-- **Smart Caching**: IndexedDB-based caching for instant page loading
-- **Reading Progress**: Automatically saves your reading position
-- **Keyboard Shortcuts**: Arrow keys, spacebar, Home/End navigation, zoom controls
-- **PWA**: PWA Support for offline use
-- **Mobile Friendly**: Responsive design works on tablets and phones
+- **Instant archive loading** – client-side extraction for `.cbz` and `.cbr` files with pinch/scroll zoom and smooth panning.
+- **Auto-hiding viewer UI** – tap or move to reveal controls; pin the overlay when you want it to stay.
+- **Touch & keyboard friendly** – left/right taps, arrow keys, pinch-to-zoom, drag to pan.
+- **Local library** – comics, thumbnails, and progress are cached in IndexedDB for quick reopen and offline access.
+- **Installable PWA** – ships with a manifest and Workbox configuration so you can add it to your home screen and use it offline.
+- **Recent history** – home view shows storage usage and last-read progress; library lists everything stored locally.
 
-## Quick Start
+## Project Structure
 
-1. **Install dependencies**:
-   ```bash
-   npm install
-   ```
-
-2. **Start development server**:
-   ```bash
-   npm run dev
-   ```
-
-3. **Open your browser** to `http://localhost:5173`
-
-4. **Drop a CBZ/CBR file** or click to select one and start reading!
-
-## Usage
-
-### Opening Comics
-- Drag and drop a `.cbz` or `.cbr` file onto the landing page
-- Or click the drop zone to select a file using the file picker
-- Recently opened comics will appear in your library shelf
-- **New files**: Navigate directly to reading - no extra steps!
-- **Recent comics**: May require re-selecting the file due to browser security
-
-### Reading
-- **Navigation**: Use arrow keys, spacebar, or on-screen buttons
-- **Zoom Controls**: 
-  - Ctrl+Scroll wheel to zoom in/out
-  - +/- keys for zoom
-  - 0 key to reset zoom
-  - Zoom buttons in the toolbar
-- **Pan & Scroll**: 
-  - Drag with mouse to pan around zoomed images
-  - Scroll wheel to pan when zoomed
-  - Automatic centering for smaller images
-- **View Modes**: Switch between fit-width, fit-height, and original size
-- **Progress**: Your reading position is automatically saved
-- **Performance**: Pages are cached for instant loading
-
-### Keyboard Shortcuts
-- `←` / `PageUp`: Previous page
-- `→` / `PageDown` / `Space`: Next page
-- `Home`: Go to first page
-- `End`: Go to last page
-- `+` / `=`: Zoom in
-- `-`: Zoom out  
-- `0`: Reset zoom to 100%
-- `Ctrl+Scroll`: Zoom in/out
-
-## Technical Architecture
-
-### Core Components
-- **ZipManager**: Handles archive extraction using Web Workers
-- **IndexedDB Store**: Caches extracted images and reading positions
-- **Viewer Component**: Canvas-based image rendering with zoom/fit modes
-- **Session Store**: Svelte stores for reactive state management
-
-### Web Workers
-Archive processing runs in Web Workers to prevent UI blocking:
-- ZIP extraction and file listing
-- Image blob creation and caching
-- Background prefetching of upcoming pages
-
-### Caching Strategy
-- **Session Cache**: Current comic pages in memory
-- **Persistent Cache**: IndexedDB stores extracted images
-- **Reading Positions**: Automatically saved to IndexedDB
-- **Smart Prefetch**: Loads 2 pages ahead for smooth navigation
-
-## File Support
-
-### Fully Supported
-- ✅ **CBZ/CBR** (Comic Book ZIP) - Perfect support with instant loading
-
-
-## Development
-
-### Project Structure
 ```
 src/
-├── routes/                 # SvelteKit routes
-│   ├── +layout.svelte     # Global layout
-│   ├── +page.svelte       # Landing page
-│   └── reader/            # Reader route
 ├── lib/
-│   ├── archive/           # Archive handling
-│   │   ├── zipWorker.ts   # Web Worker for ZIP extraction
-│   │   └── zipManager.ts  # Worker management wrapper
-│   ├── store/             # Data persistence
-│   │   ├── indexeddb.ts   # IndexedDB cache
-│   │   └── session.ts     # Svelte stores
-│   └── ui/                # UI components
-│       └── Viewer.svelte  # Main comic viewer
-└── types/
-    └── comic.ts           # TypeScript definitions
+│   ├── archive/        # libarchive.js wrapper for extracting images
+│   ├── storage/        # browser storage helpers (IndexedDB blobs)
+│   ├── store/          # Svelte writable stores for session state
+│   └── ui/             # UI components (Viewer.svelte, etc.)
+├── routes/
+│   ├── +page.svelte    # Landing page with uploader and recent shelf
+│   ├── reader/         # Reader route (+page.svelte) that mounts Viewer
+│   └── library/        # Dedicated library page for offline collection
+└── types/              # Shared TypeScript interfaces
 ```
 
-### Key Dependencies
-- **SvelteKit**: Framework and build system
-- **TypeScript**: Type safety and modern JavaScript
-- **fflate**: Fast ZIP extraction library
-- **Vite**: Build tool and dev server
+Key supporting files:
 
-## Performance Notes
+- `vite.config.ts` – Vite + PWA plugin configuration.
+- `svelte.config.js` – SvelteKit adapter/static build setup.
+- `package.json` – project scripts and dependencies.
 
-- **Memory Efficient**: Only loads current page + 2 prefetched pages
-- **Fast Extraction**: Web Workers prevent UI freezing during extraction
-- **Smart Caching**: IndexedDB provides persistent caching across sessions
-- **Canvas Rendering**: Uses `createImageBitmap` for efficient decoding
+## Getting Started
 
-## Contributing
+```bash
+# 1. Install dependencies
+npm install
 
-This is a feature-complete implementation. Planned improvements:
-- File System Access API for persistent file access
-- ComicInfo.xml metadata parsing
-- Two-page spread mode
-- Thumbnail strip navigation
-- PWA/offline support (done)
+# 2. Start the development server
+npm run dev
+
+# 3. Open the app at http://localhost:5173
+```
+
+Drag a `.cbz`/`.cbr` file onto the home page (or tap the drop zone on mobile) to start reading. The viewer automatically caches the file and your progress locally. Revisit the home page or library to reopen cached comics without reuploading.
+
+## Building
+
+Create a production build with:
+
+```bash
+npm run build
+```
+
+Serve the generated static output from the `build/` directory with any static file host.
 
 ## License
 

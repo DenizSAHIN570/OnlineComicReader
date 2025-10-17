@@ -3,28 +3,6 @@
 
 import type { ComicPage } from '../../types/comic.js';
 
-export interface ArchiveFile {
-	name: string;
-	size: number;
-	content: Uint8Array;
-}
-
-export interface ArchiveEntry {
-	name: string;
-	is_file: boolean;
-	size_compressed: number;
-	size_uncompressed: number;
-	readData: (callback: (data: ArrayBuffer | null, error: Error | null) => void) => void;
-}
-
-export interface Archive {
-	file_name: string;
-	archive_type: 'zip' | 'rar' | 'tar';
-	array_buffer: ArrayBuffer;
-	entries: ArchiveEntry[];
-	handle: any;
-}
-
 class ArchiveManager {
 	private Archive: any = null;
 	private isInitialized = false;
@@ -62,16 +40,6 @@ class ArchiveManager {
 		return imageExtensions.includes(extension);
 	}
 
-	private sortByFilename(entries: ArchiveEntry[]): ArchiveEntry[] {
-		return entries.sort((a, b) => {
-			// Natural sort for filenames (handles numbers correctly)
-			return a.name.localeCompare(b.name, undefined, {
-				numeric: true,
-				sensitivity: 'base'
-			});
-		});
-	}
-
 	async openArchive(file: File): Promise<ComicPage[]> {
 		await this.initialize();
 
@@ -85,30 +53,30 @@ class ArchiveManager {
 				// Get file listing
 				const filesObj = await archive.getFilesObject();
 				
-				// Flatten and convert to our format
-				const entries: any[] = [];
-				
-				function processFileObj(obj: any, basePath = '') {
-					for (const [name, item] of Object.entries(obj)) {
-						const fullPath = basePath ? `${basePath}/${name}` : name;
-						
-						if (item && typeof item === 'object' && 'extract' in item) {
-							// This is a compressed file
-							if (this.isImageFile(fullPath)) {
-								entries.push({
-									name: fullPath,
-									size: (item as any).size || 0,
-									archiveFile: item
-								});
-							}
-						} else if (typeof item === 'object') {
-							// This is a directory, recurse
-							processFileObj(item, fullPath);
+			// Flatten and convert to our format
+			const entries: Array<{ name: string; size: number; archiveFile: any }> = [];
+			
+			const processFileObj = (obj: Record<string, any>, basePath = '') => {
+				for (const [name, item] of Object.entries(obj)) {
+					const fullPath = basePath ? `${basePath}/${name}` : name;
+					
+					if (item && typeof item === 'object' && 'extract' in item) {
+						// This is a compressed file
+						if (this.isImageFile(fullPath)) {
+							entries.push({
+								name: fullPath,
+								size: (item as any).size || 0,
+								archiveFile: item
+							});
 						}
+					} else if (typeof item === 'object') {
+						// This is a directory, recurse
+						processFileObj(item as Record<string, any>, fullPath);
 					}
 				}
-				
-				processFileObj.call(this, filesObj);
+			};
+			
+			processFileObj(filesObj as Record<string, any>);
 
 				// Sort entries by filename
 				const sortedEntries = entries.sort((a, b) => 
@@ -121,9 +89,7 @@ class ArchiveManager {
 				const pages: ComicPage[] = sortedEntries.map((entry, index) => ({
 					index,
 					filename: entry.name,
-					blob: null, // Will be loaded on demand
-					url: null,   // Will be created on demand
-					archiveFile: entry.archiveFile // Store the raw entry for later data loading
+					entry: entry.archiveFile // Store the raw entry for later data loading
 				}));
 
 				resolve(pages);
@@ -137,7 +103,7 @@ class ArchiveManager {
 	async loadPage(page: ComicPage): Promise<void> {
 		if (page.blob) return; // Already loaded
 
-		const archiveFile = (page as any).archiveFile;
+		const archiveFile = (page as any).entry;
 		if (!archiveFile) {
 			throw new Error('Page archive file not found');
 		}

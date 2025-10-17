@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import ArchiveManager from '$lib/archive/archiveManager.js';
 	import { IndexedDBStore } from '$lib/store/indexeddb.js';
-	import { comicStorage, type ComicMetadata } from '$lib/storage/comicStorage.js';
+import { comicStorage, type ComicMetadata } from '$lib/storage/comicStorage.js';
 	import { setComic, setLoading, setError, clearError } from '$lib/store/session.js';
 	import type { ComicBook } from '../types/comic.js';
 	
@@ -155,7 +155,11 @@
 			console.log('Metadata saved');
 			
 			// Save the full file for offline access (with thumbnail)
-			await comicStorage.saveComic(file, thumbnail);
+			await comicStorage.saveComic(file, {
+				thumbnail,
+				totalPages: pages.length,
+				currentPage: comic.currentPage
+			});
 			console.log('Comic saved to offline storage with thumbnail');
 			
 			// Reload the comics list
@@ -188,13 +192,12 @@
 				throw new Error('No images found in archive. The file may be corrupted or use an unsupported RAR version.');
 			}
 			
+			const storedComic = await comicStorage.getComic(comicId);
+			
 			// Get existing metadata
 			let comic = await dbStore.getComic(comicId);
 			
 			if (!comic) {
-				// Get thumbnail from storage
-				const storedComic = await comicStorage.getComic(comicId);
-				
 				// Create metadata with CLEAN pages
 				const cleanedPages = cleanPages(pages);
 				comic = {
@@ -202,7 +205,7 @@
 					title: file.name.replace(/\.(cbz|zip|cbr|rar)$/i, ''),
 					filename: file.name,
 					pages: cleanedPages,
-					currentPage: 0,
+					currentPage: storedComic?.currentPage ?? 0,
 					totalPages: pages.length,
 					lastRead: new Date(),
 					coverThumbnail: storedComic?.thumbnail
@@ -213,12 +216,18 @@
 				// Update pages array with CLEAN pages and last read time
 				comic.pages = cleanPages(pages);
 				comic.totalPages = pages.length;
+				if (storedComic) {
+					comic.currentPage = storedComic.currentPage;
+				}
 				comic.lastRead = new Date();
 				await dbStore.saveComic(comic);
 			}
 			
 			// Update last accessed in storage (won't create duplicate)
-			await comicStorage.updateLastAccessed(comicId);
+			await comicStorage.updateLastAccessed(comicId, {
+				currentPage: comic.currentPage ?? 0,
+				totalPages: comic.totalPages
+			});
 			
 			// Reload comics list
 			await loadComics();
@@ -306,7 +315,7 @@
 			}
 
 			// Create a File object from the stored blob
-			const file = new File([storedComic.fileData], storedComic.filename);
+			const file = comicStorage.createFile(storedComic);
 			
 			// Use the existing openExistingComic function
 			await openExistingComic(comicMeta.id, file);
@@ -421,16 +430,20 @@
 									</svg>
 								</button>
 							</div>
-							<div class="comic-info">
-								<div class="comic-title">{comic.filename}</div>
-								<div class="comic-meta">
-									<span>{formatFileSize(comic.fileSize)}</span>
+						<div class="comic-info">
+							<div class="comic-title">{comic.filename}</div>
+							<div class="comic-meta">
+								<span>{formatFileSize(comic.fileSize)}</span>
+								<span>•</span>
+								<span>{formatDate(comic.lastAccessed)}</span>
+								{#if comic.totalPages > 0}
 									<span>•</span>
-									<span>{formatDate(comic.lastAccessed)}</span>
-								</div>
+									<span>Page {Math.min(comic.currentPage + 1, comic.totalPages)} / {comic.totalPages}</span>
+								{/if}
 							</div>
 						</div>
-					{/each}
+					</div>
+				{/each}
 				</div>
 				<div class="shelf-support"></div>
 			</div>
@@ -823,6 +836,7 @@
 		max-height: 3.9em;
 		overflow: hidden;
 		display: -webkit-box;
+		line-clamp: 3;
 		-webkit-line-clamp: 3;
 		-webkit-box-orient: vertical;
 	}

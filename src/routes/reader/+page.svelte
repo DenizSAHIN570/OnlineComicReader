@@ -1,91 +1,111 @@
+
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { get } from 'svelte/store';
 	import { currentComic, currentPageIndex, isLoading, error, currentFile } from '$lib/store/session.js';
 	import ArchiveManager from '$lib/archive/archiveManager.js';
-	import type { ComicPage } from '../../types/comic.js';
 	import { IndexedDBStore } from '$lib/store/indexeddb.js';
 	import Viewer from '$lib/ui/Viewer.svelte';
 	import type { ComicBook } from '../../types/comic.js';
-	
+	import { comicStorage } from '$lib/storage/comicStorage.js';
+
 	let archiveManager: ArchiveManager;
 	let dbStore: IndexedDBStore;
 	let comic: ComicBook | null = null;
 	let file: File | null = null;
 	let archiveReady = false;
-	
-	// Subscribe to store changes
-	const unsubscribeComic = currentComic.subscribe(value => {
+
+	const unsubscribeComic = currentComic.subscribe((value) => {
 		comic = value;
 	});
-	
-	const unsubscribeFile = currentFile.subscribe(value => {
+
+	const unsubscribeFile = currentFile.subscribe((value) => {
 		file = value;
 	});
-	
-	onMount(async () => {
-		// Initialize services
-		archiveManager = new ArchiveManager();
-		dbStore = new IndexedDBStore();
-		await dbStore.init();
-		
-		// Check if we have a comic to display
-		if (!comic) {
-			await goto('/');
-			return;
-		}
-		
-		// If we have a file from the store, load it automatically
-		if (file && comic) {
-			try {
-				// Check if file is supported first
-				const isSupported = await archiveManager.isSupported(file);
-				if (!isSupported) {
-					throw new Error('Unsupported file format');
-				}
-				
-				// Load the archive and get pages
-				const pages = await archiveManager.openArchive(file);
-				
-				// Update comic with pages info
-				comic.pages = pages;
-				comic.totalPages = pages.length;
-				currentComic.set(comic);
-				
-				archiveReady = true;
-				console.log(`Loaded ${pages.length} pages from ${await archiveManager.getFileType(file)} archive`);
-			} catch (error) {
-				console.error('Failed to load archive:', error);
-				// File might be stale, request reload
-				requestFileReload();
-			}
-		} else if (comic && !file) {
-			// We have comic metadata but no file, request reload
-			requestFileReload();
-		}
-	});
-	
-	onDestroy(() => {
-		unsubscribeComic();
-		unsubscribeFile();
-		if (archiveManager) {
-			archiveManager.cleanup();
-		}
-	});
-	
-	// Subscribe to page changes to save reading position
-	currentPageIndex.subscribe(async (pageIndex) => {
+
+	const unsubscribePage = currentPageIndex.subscribe(async (pageIndex) => {
 		if (comic && dbStore && pageIndex !== undefined) {
 			comic.currentPage = pageIndex;
 			comic.lastRead = new Date();
 			try {
-				await dbStore.saveComic(comic);
-			} catch (error) {
-				console.error('Failed to save reading position:', error);
+				await dbStore.saveComic(structuredCloneComic(comic));
+				await comicStorage.updateProgress(comic.id, pageIndex, comic.totalPages);
+			} catch (saveError) {
+				console.error('Failed to save reading position:', saveError);
 			}
 		}
 	});
-	
+
+	onMount(async () => {
+		archiveManager = new ArchiveManager();
+		dbStore = new IndexedDBStore();
+		await dbStore.init();
+
+		if (!comic) {
+			await goto('/');
+			return;
+		}
+
+		if (file && comic) {
+			try {
+				const isSupported = await archiveManager.isSupported(file);
+				if (!isSupported) {
+					throw new Error('Unsupported file format');
+				}
+
+				const pages = await archiveManager.openArchive(file);
+				comic.pages = pages;
+				comic.totalPages = pages.length;
+				currentComic.set(comic);
+
+				archiveReady = true;
+				console.log(`Loaded ${pages.length} pages from ${await archiveManager.getFileType(file)} archive`);
+			} catch (error) {
+				console.error('Failed to load archive:', error);
+				requestFileReload();
+			}
+		} else if (comic && !file) {
+			requestFileReload();
+		}
+	});
+
+	onDestroy(() => {
+		void saveProgress();
+		unsubscribeComic();
+		unsubscribeFile();
+		unsubscribePage();
+		if (archiveManager) {
+			archiveManager.cleanup();
+		}
+	});
+
+async function saveProgress(): Promise<void> {
+	if (!comic || !dbStore) return;
+	const pageIndex = get(currentPageIndex);
+	comic.currentPage = pageIndex;
+	comic.lastRead = new Date();
+	const totalPages = comic.totalPages || comic.pages?.length || 0;
+	try {
+		await dbStore.saveComic(structuredCloneComic(comic));
+		await comicStorage.updateProgress(comic.id, pageIndex, totalPages);
+	} catch (error) {
+		console.error('Failed to persist reading progress:', error);
+	}
+}
+
+function structuredCloneComic(comic: ComicBook): ComicBook {
+	return {
+		...comic,
+		pages: comic.pages.map((page) => ({
+			index: page.index,
+			filename: page.filename,
+			blob: undefined,
+			url: undefined
+		}))
+	};
+}
+
 	async function onExtractPage(index: number): Promise<Blob> {
 		if (!archiveManager || !comic) {
 			throw new Error('Archive manager or comic not available');
@@ -161,7 +181,7 @@
 		// Reset input
 		input.value = '';
 	}
-	
+
 	function requestFileReload() {
 		// Show file reload dialog
 		setTimeout(() => {
@@ -171,8 +191,9 @@
 			}
 		}, 100);
 	}
-	
-	async function goHome() {
+
+	async function exitReader() {
+		await saveProgress();
 		await goto('/');
 	}
 </script>
@@ -186,7 +207,7 @@
 		<div class="error-content">
 			<h2>Error</h2>
 			<p>{$error}</p>
-			<button on:click={goHome}>Go Home</button>
+			<button on:click={exitReader}>Go Home</button>
 		</div>
 	</div>
 {/if}
@@ -201,7 +222,7 @@
 {/if}
 
 {#if comic && file && archiveReady}
-	<Viewer {comic} {onExtractPage} />
+	<Viewer {comic} {onExtractPage} onExit={exitReader} />
 {:else if comic && file && !archiveReady}
 	<div class="loading-overlay">
 		<div class="loading-content">
@@ -226,7 +247,7 @@
 				<label for="file-reload-input" class="file-select-button">
 					Select File
 				</label>
-				<button on:click={goHome} class="cancel-button">
+				<button on:click={exitReader} class="cancel-button">
 					Cancel
 				</button>
 			</div>
@@ -239,7 +260,7 @@
 	<!-- No comic - redirect to home -->
 	<div class="no-comic">
 		<p>No comic selected.</p>
-		<button on:click={goHome}>Go Home</button>
+		<button on:click={exitReader}>Go Home</button>
 	</div>
 {/if}
 

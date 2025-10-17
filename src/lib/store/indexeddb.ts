@@ -62,19 +62,6 @@ export class IndexedDBStore {
 		});
 	}
 
-	async getAllComics(): Promise<ComicBook[]> {
-		if (!this.db) throw new Error('Database not initialized');
-		
-		return new Promise((resolve, reject) => {
-			const transaction = this.db!.transaction([STORE_COMICS], 'readonly');
-			const store = transaction.objectStore(STORE_COMICS);
-			
-			const request = store.getAll();
-			request.onerror = () => reject(request.error);
-			request.onsuccess = () => resolve(request.result || []);
-		});
-	}
-
 	async savePageBlob(comicId: string, pageIndex: number, blob: Blob): Promise<void> {
 		if (!this.db) throw new Error('Database not initialized');
 		

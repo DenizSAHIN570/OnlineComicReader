@@ -34,11 +34,12 @@
 			const storedComic = await comicStorage.getComic(id);
 			if (!storedComic) {
 				alert('Comic not found');
+				setLoading(false);
 				return;
 			}
 
 			// Create a File object from the stored blob
-			const file = new File([storedComic.fileData], storedComic.filename);
+			const file = comicStorage.createFile(storedComic);
 			
 			// Initialize archive manager and load the comic
 			const archiveManager = new ArchiveManager();
@@ -63,7 +64,7 @@
 						filename: p.filename,
 						index: p.index
 					})),
-					currentPage: 0,
+					currentPage: storedComic.currentPage ?? 0,
 					totalPages: pages.length,
 					lastRead: new Date()
 				};
@@ -72,8 +73,16 @@
 			} else {
 				// Update last read time
 				comic.lastRead = new Date();
+				if (storedComic.currentPage !== undefined) {
+					comic.currentPage = storedComic.currentPage;
+				}
 				await dbStore.saveComic(comic);
 			}
+			
+			await comicStorage.updateLastAccessed(comicId, {
+				currentPage: comic.currentPage ?? 0,
+				totalPages: comic.totalPages
+			});
 			
 			// Set current comic and navigate to reader
 			setComic(comic, file);
@@ -234,10 +243,17 @@
 							</div>
 						</div>
 
-						<div class="space-y-1 text-xs text-gray-500 mb-4">
-							<p>Uploaded: {formatDate(comic.uploadDate)}</p>
-							<p>Last read: {formatDate(comic.lastAccessed)}</p>
-						</div>
+					<div class="space-y-1 text-xs text-gray-500 mb-4">
+						<p>Uploaded: {formatDate(comic.uploadDate)}</p>
+						<p>Last read: {formatDate(comic.lastAccessed)}</p>
+						<p>
+							{#if comic.totalPages > 0}
+								Progress: Page {Math.min(comic.currentPage + 1, comic.totalPages)} of {comic.totalPages}
+							{:else}
+								Progress: Not started
+							{/if}
+						</p>
+					</div>
 
 						<div class="flex gap-2">
 							<button
