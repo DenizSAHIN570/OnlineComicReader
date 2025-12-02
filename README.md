@@ -4,6 +4,8 @@ This application is a comic book reader. It does not host, distribute, or includ
 Users are solely responsible for the content they choose to open with this software.  
 The maintainers and contributors accept no liability for misuse or distribution of third-party content.
 
+Contains AI generated code.
+
 # Online Comic Reader
 
 Online Comic Reader is a SvelteKit application for reading CBZ/CBR comics directly in the browser. It focuses on fast archive extraction, an immersive viewer, and seamless device persistence so you can pick up exactly where you left off.
