@@ -12,6 +12,7 @@ export interface StoredComic {
 	thumbnail?: string;
 	currentPage: number;
 	totalPages: number;
+	filter?: string;
 }
 
 export interface ComicMetadata {
@@ -23,6 +24,7 @@ export interface ComicMetadata {
 	thumbnail?: string;
 	currentPage: number;
 	totalPages: number;
+	filter?: string;
 }
 
 type ComicRecord = {
@@ -38,6 +40,7 @@ type ComicRecord = {
 	version?: number;
 	currentPage?: number;
 	totalPages?: number;
+	filter?: string;
 };
 
 class ComicStorageManager {
@@ -167,9 +170,42 @@ class ComicStorageManager {
 				fileSize: comic.fileSize,
 				thumbnail: comic.thumbnail,
 				currentPage: comic.currentPage,
-				totalPages: comic.totalPages
+				totalPages: comic.totalPages,
+				filter: comic.filter
 			}))
 			.sort((a, b) => b.lastAccessed - a.lastAccessed);
+	}
+
+	async saveFilterSetting(comicId: string, filter: string): Promise<void> {
+		const db = await this.ensureDB();
+		return new Promise((resolve, reject) => {
+			const transaction = db.transaction(this.storeName, 'readwrite');
+			const objectStore = transaction.objectStore(this.storeName);
+			const getRequest = objectStore.get(comicId);
+			getRequest.onsuccess = () => {
+				const record = getRequest.result as ComicRecord | undefined;
+				if (record) {
+					record.filter = filter;
+					const putRequest = objectStore.put(record);
+					putRequest.onsuccess = () => resolve();
+					putRequest.onerror = () => reject(new Error('Failed to save filter setting'));
+				} else {
+					resolve(); // Not found
+				}
+			};
+			getRequest.onerror = () => reject(new Error('Failed to get comic for filter update'));
+		});
+	}
+
+	async loadAllFilterSettings(): Promise<Record<string, string>> {
+		const comics = await this.getAllComics();
+		const settings: Record<string, string> = {};
+		for (const comic of comics) {
+			if (comic.filter) {
+				settings[comic.id] = comic.filter;
+			}
+		}
+		return settings;
 	}
 
 	async deleteComic(id: string): Promise<void> {
@@ -361,7 +397,8 @@ class ComicStorageManager {
 			fileSize,
 			thumbnail: record.thumbnail,
 			currentPage,
-			totalPages
+			totalPages,
+			filter: record.filter
 		};
 	}
 
