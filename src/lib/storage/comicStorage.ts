@@ -1,9 +1,9 @@
 // IndexedDB Storage Manager for Comic Files
 // Persists comic archives locally for offline access with schema migration support
 
-export interface StoredComic {
-	id: string;
-	filename: string;
+import type { ComicBook } from '../../types/comic.js';
+
+export interface StoredComic extends ComicBook {
 	fileBuffer: ArrayBuffer;
 	mimeType: string;
 	uploadDate: number;
@@ -45,8 +45,10 @@ type ComicRecord = {
 
 class ComicStorageManager {
 	private dbName = 'ComicReaderFilesDB';
-	private dbVersion = 1;
+	private dbVersion = 3;
 	private storeName = 'comicFiles';
+	private pagesStoreName = 'comicPages';
+	private metadataStoreName = 'comicMetadata';
 	private recordVersion = 2;
 	private db: IDBDatabase | null = null;
 
@@ -67,6 +69,14 @@ class ComicStorageManager {
 					objectStore.createIndex('filename', 'filename', { unique: false });
 					objectStore.createIndex('uploadDate', 'uploadDate', { unique: false });
 					objectStore.createIndex('lastAccessed', 'lastAccessed', { unique: false });
+				}
+				if (!db.objectStoreNames.contains(this.pagesStoreName)) {
+					const pagesStore = db.createObjectStore(this.pagesStoreName, { keyPath: 'key' });
+					pagesStore.createIndex('comicId', 'comicId', { unique: false });
+				}
+				if (!db.objectStoreNames.contains(this.metadataStoreName)) {
+					const metadataStore = db.createObjectStore(this.metadataStoreName, { keyPath: 'id' });
+					metadataStore.createIndex('lastRead', 'lastRead', { unique: false });
 				}
 			};
 		});
@@ -130,7 +140,7 @@ class ComicStorageManager {
 		});
 	}
 
-	async getComic(id: string): Promise<StoredComic | null> {
+	async getComic(id: string): Promise<ComicBook | null> {
 		const db = await this.ensureDB();
 
 		const record = await new Promise<ComicRecord | undefined>((resolve, reject) => {
@@ -282,6 +292,37 @@ class ComicStorageManager {
 		return new File([blob], storedComic.filename, {
 			type: storedComic.mimeType,
 			lastModified: storedComic.lastAccessed || storedComic.uploadDate || Date.now()
+		});
+	}
+
+	async savePageBlob(comicId: string, pageIndex: number, blob: Blob): Promise<void> {
+		const db = await this.ensureDB();
+		const key = `${comicId}-${pageIndex}`;
+
+		return new Promise((resolve, reject) => {
+			const transaction = db.transaction(this.pagesStoreName, 'readwrite');
+			const store = transaction.objectStore(this.pagesStoreName);
+			const request = store.put({ key, comicId, pageIndex, blob, cachedAt: new Date() });
+
+			request.onerror = () => reject(request.error);
+			request.onsuccess = () => resolve();
+		});
+	}
+
+	async getPageBlob(comicId: string, pageIndex: number): Promise<Blob | null> {
+		const db = await this.ensureDB();
+		const key = `${comicId}-${pageIndex}`;
+
+		return new Promise((resolve, reject) => {
+			const transaction = db.transaction(this.pagesStoreName, 'readonly');
+			const store = transaction.objectStore(this.pagesStoreName);
+			const request = store.get(key);
+
+			request.onerror = () => reject(request.error);
+			request.onsuccess = () => {
+				const result = request.result;
+				resolve(result ? result.blob : null);
+			};
 		});
 	}
 
@@ -454,6 +495,18 @@ class ComicStorageManager {
 					cursor.continue();
 				}
 			};
+		});
+	}
+
+	async saveComicMetadata(comic: ComicBook): Promise<void> {
+		const db = await this.ensureDB();
+		return new Promise((resolve, reject) => {
+			const transaction = db.transaction(this.metadataStoreName, 'readwrite');
+			const store = transaction.objectStore(this.metadataStoreName);
+			const request = store.put(comic);
+
+			request.onerror = () => reject(request.error);
+			request.onsuccess = () => resolve();
 		});
 	}
 

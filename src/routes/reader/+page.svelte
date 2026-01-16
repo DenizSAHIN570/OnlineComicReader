@@ -5,13 +5,11 @@
 	import { get } from 'svelte/store';
 	import { currentComic, currentPageIndex, isLoading, error, currentFile } from '$lib/store/session.js';
 	import ArchiveManager from '$lib/archive/archiveManager.js';
-	import { IndexedDBStore } from '$lib/store/indexeddb.js';
 	import Viewer from '$lib/ui/Viewer.svelte';
 	import type { ComicBook } from '../../types/comic.js';
 	import { comicStorage } from '$lib/storage/comicStorage.js';
 
 	let archiveManager: ArchiveManager;
-	let dbStore: IndexedDBStore;
 	let comic: ComicBook | null = null;
 	let file: File | null = null;
 	let archiveReady = false;
@@ -25,11 +23,11 @@
 	});
 
 	const unsubscribePage = currentPageIndex.subscribe(async (pageIndex) => {
-		if (comic && dbStore && pageIndex !== undefined) {
+		if (comic && pageIndex !== undefined) {
 			comic.currentPage = pageIndex;
 			comic.lastRead = new Date();
 			try {
-				await dbStore.saveComic(structuredCloneComic(comic));
+				await comicStorage.saveComicMetadata(structuredCloneComic(comic));
 				await comicStorage.updateProgress(comic.id, pageIndex, comic.totalPages);
 			} catch (saveError) {
 				console.error('Failed to save reading position:', saveError);
@@ -39,8 +37,7 @@
 
 	onMount(async () => {
 		archiveManager = new ArchiveManager();
-		dbStore = new IndexedDBStore();
-		await dbStore.init();
+		await comicStorage.init();
 
 		if (!comic) {
 			await goto('/');
@@ -81,13 +78,13 @@
 	});
 
 async function saveProgress(): Promise<void> {
-	if (!comic || !dbStore) return;
+	if (!comic) return;
 	const pageIndex = get(currentPageIndex);
 	comic.currentPage = pageIndex;
 	comic.lastRead = new Date();
 	const totalPages = comic.totalPages || comic.pages?.length || 0;
 	try {
-		await dbStore.saveComic(structuredCloneComic(comic));
+		await comicStorage.saveComicMetadata(structuredCloneComic(comic));
 		await comicStorage.updateProgress(comic.id, pageIndex, totalPages);
 	} catch (error) {
 		console.error('Failed to persist reading progress:', error);
@@ -112,15 +109,13 @@ function structuredCloneComic(comic: ComicBook): ComicBook {
 		}
 		
 		// Check cache first
-		if (dbStore) {
-			try {
-				const cachedBlob = await dbStore.getPageBlob(comic.id, index);
-				if (cachedBlob) {
-					return cachedBlob;
-				}
-			} catch (error) {
-				console.warn('Failed to get cached page:', error);
+		try {
+			const cachedBlob = await comicStorage.getPageBlob(comic.id, index);
+			if (cachedBlob) {
+				return cachedBlob;
 			}
+		} catch (error) {
+			console.warn('Failed to get cached page:', error);
 		}
 		
 		// Get the page from comic pages array
@@ -139,12 +134,10 @@ function structuredCloneComic(comic: ComicBook): ComicBook {
 		}
 		
 		// Cache the extracted page
-		if (dbStore) {
-			try {
-				await dbStore.savePageBlob(comic.id, index, page.blob);
-			} catch (error) {
-				console.warn('Failed to cache page:', error);
-			}
+		try {
+			await comicStorage.savePageBlob(comic.id, index, page.blob);
+		} catch (error) {
+			console.warn('Failed to cache page:', error);
 		}
 		
 		return page.blob;

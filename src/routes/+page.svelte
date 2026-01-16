@@ -1,312 +1,68 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { goto } from '$app/navigation';
-	import ArchiveManager from '$lib/archive/archiveManager.js';
-	import { IndexedDBStore } from '$lib/store/indexeddb.js';
-import { comicStorage, type ComicMetadata } from '$lib/storage/comicStorage.js';
-	import { setComic, setLoading, setError, clearError } from '$lib/store/session.js';
-	import type { ComicBook } from '../types/comic.js';
-	
+	import { comicStorage, type ComicMetadata, type StoredComic } from '$lib/storage/comicStorage.js';
+	import { setLoading } from '$lib/store/session.js';
+	import { handleFile, openExistingComic, cleanupComicProcessor } from '$lib/services/comicProcessor.js';
+
 	let fileInput: HTMLInputElement;
 	let dragActive = false;
-	let archiveManager: ArchiveManager | null = null;
-	let dbStore: IndexedDBStore;
 	let recentComics: ComicMetadata[] = [];
 	let storageInfo = { usage: 0, quota: 0, percentage: 0 };
-	
+
 	onMount(async () => {
-		dbStore = new IndexedDBStore();
-		
 		try {
-			await dbStore.init();
 			await comicStorage.init();
-			
-			// Load comics from the storage system
 			await loadComics();
 		} catch (error) {
 			console.error('Failed to initialize:', error);
 		}
 	});
-	
+
 	async function loadComics() {
 		recentComics = await comicStorage.getAllComics();
 		recentComics.sort((a, b) => b.lastAccessed - a.lastAccessed);
 		storageInfo = await comicStorage.getStorageEstimate();
 	}
-	
+
 	onDestroy(() => {
-		if (archiveManager) {
-			archiveManager.cleanup();
-			archiveManager = null;
-		}
+		cleanupComicProcessor();
 	});
-	
+
 	function handleDragOver(event: DragEvent) {
 		event.preventDefault();
 		dragActive = true;
 	}
-	
+
 	function handleDragLeave(event: DragEvent) {
 		event.preventDefault();
 		dragActive = false;
 	}
-	
+
 	async function handleDrop(event: DragEvent) {
 		event.preventDefault();
 		dragActive = false;
-		
+
 		const files = event.dataTransfer?.files;
 		if (files && files.length > 0) {
-			await handleFile(files[0]);
+			await handleFile(files[0], loadComics);
 		}
 	}
-	
+
 	async function handleFileInput(event: Event) {
 		const input = event.target as HTMLInputElement;
 		const file = input.files?.[0];
-		
+
 		if (file) {
-			await handleFile(file);
+			await handleFile(file, loadComics);
 		}
-		
-		// Reset input
+
 		input.value = '';
 	}
-	
-	// Clean pages array to remove proxy objects and make it serializable
-	function cleanPages(pages: any[]) {
-		return pages.map(p => ({
-			filename: p.filename,
-			index: p.index
-		}));
-	}
-	
-	async function handleFile(file: File) {
-		// Initialize archive manager on demand
-		if (!archiveManager) {
-			archiveManager = new ArchiveManager();
-		}
-		
-		// Check if file is supported
-		const isSupported = await archiveManager.isSupported(file);
-		if (!isSupported) {
-			setError('Please select a CBZ, ZIP, CBR, or RAR file.');
-			return;
-		}
-		
-		clearError();
-		setLoading(true, 'Processing archive...');
-		
-		try {
-			// Generate comic ID from filename and size
-			const comicId = `${file.name}-${file.size}`;
-			
-			// Check if we already have this comic in storage
-			const existingStoredComic = await comicStorage.getComic(comicId);
-			
-			if (existingStoredComic) {
-				// Comic already exists in storage, just open it
-				console.log('Comic already in storage, opening...');
-				await openExistingComic(comicId, file);
-				return;
-			}
-			
-			// New comic, process it fully
-			console.log('New comic, processing...');
-			
-			// Open archive and get pages
-			const pages = await archiveManager.openArchive(file);
-			console.log(`Loaded ${pages.length} pages from archive`);
-			
-			if (pages.length === 0) {
-				throw new Error('No images found in archive. The file may be corrupted or use an unsupported RAR version.');
-			}
-			
-			// Load the first page to create a thumbnail
-			let thumbnail: string | undefined;
-			if (pages.length > 0) {
-				try {
-					await archiveManager.loadPage(pages[0]);
-					if (pages[0].blob) {
-						console.log('Creating thumbnail...');
-						thumbnail = await createThumbnail(pages[0].blob);
-						console.log('Thumbnail created successfully');
-					}
-				} catch (err) {
-					console.error('Failed to create thumbnail:', err);
-				}
-			}
-			
-			// Create comic book object with CLEAN pages (no proxy objects)
-			const cleanedPages = cleanPages(pages);
-			const comic: ComicBook = {
-				id: comicId,
-				title: file.name.replace(/\.(cbz|zip|cbr|rar)$/i, ''),
-				filename: file.name,
-				pages: cleanedPages,
-				currentPage: 0,
-				totalPages: pages.length,
-				lastRead: new Date(),
-				coverThumbnail: thumbnail
-			};
-			
-			// Save metadata to database
-			await dbStore.saveComic(comic);
-			console.log('Metadata saved');
-			
-			// Save the full file for offline access (with thumbnail)
-			await comicStorage.saveComic(file, {
-				thumbnail,
-				totalPages: pages.length,
-				currentPage: comic.currentPage
-			});
-			console.log('Comic saved to offline storage with thumbnail');
-			
-			// Reload the comics list
-			await loadComics();
-			
-			// Set current comic and navigate to reader
-			setComic(comic, file);
-			await goto('/reader');
-			
-		} catch (error) {
-			console.error('Failed to process file:', error);
-			setError(error instanceof Error ? error.message : 'Failed to process file');
-		} finally {
-			setLoading(false);
-		}
-	}
-	
-	async function openExistingComic(comicId: string, file: File) {
-		try {
-			// Initialize archive manager if needed
-			if (!archiveManager) {
-				archiveManager = new ArchiveManager();
-			}
-			
-			// Load the archive pages
-			const pages = await archiveManager.openArchive(file);
-			console.log(`Reopened archive with ${pages.length} pages`);
-			
-			if (pages.length === 0) {
-				throw new Error('No images found in archive. The file may be corrupted or use an unsupported RAR version.');
-			}
-			
-			const storedComic = await comicStorage.getComic(comicId);
-			
-			// Get existing metadata
-			let comic = await dbStore.getComic(comicId);
-			
-			if (!comic) {
-				// Create metadata with CLEAN pages
-				const cleanedPages = cleanPages(pages);
-				comic = {
-					id: comicId,
-					title: file.name.replace(/\.(cbz|zip|cbr|rar)$/i, ''),
-					filename: file.name,
-					pages: cleanedPages,
-					currentPage: storedComic?.currentPage ?? 0,
-					totalPages: pages.length,
-					lastRead: new Date(),
-					coverThumbnail: storedComic?.thumbnail
-				};
-				
-				await dbStore.saveComic(comic);
-			} else {
-				// Update pages array with CLEAN pages and last read time
-				comic.pages = cleanPages(pages);
-				comic.totalPages = pages.length;
-				if (storedComic) {
-					comic.currentPage = storedComic.currentPage;
-				}
-				comic.lastRead = new Date();
-				await dbStore.saveComic(comic);
-			}
-			
-			// Update last accessed in storage (won't create duplicate)
-			await comicStorage.updateLastAccessed(comicId, {
-				currentPage: comic.currentPage ?? 0,
-				totalPages: comic.totalPages
-			});
-			
-			// Reload comics list
-			await loadComics();
-			
-			// Set current comic and navigate to reader
-			setComic(comic, file);
-			setLoading(false);
-			await goto('/reader');
-			
-		} catch (error) {
-			console.error('Failed to open existing comic:', error);
-			setError(error instanceof Error ? error.message : 'Failed to open comic');
-			setLoading(false);
-		}
-	}
-	
-	async function createThumbnail(blob: Blob): Promise<string> {
-		return new Promise((resolve, reject) => {
-			const img = new Image();
-			const canvas = document.createElement('canvas');
-			const ctx = canvas.getContext('2d');
-			
-			img.onload = () => {
-				// Set thumbnail size
-				const maxWidth = 200;
-				const maxHeight = 300;
-				let width = img.width;
-				let height = img.height;
-				
-				// Calculate aspect ratio
-				if (width > height) {
-					if (width > maxWidth) {
-						height *= maxWidth / width;
-						width = maxWidth;
-					}
-				} else {
-					if (height > maxHeight) {
-						width *= maxHeight / height;
-						height = maxHeight;
-					}
-				}
-				
-				canvas.width = width;
-				canvas.height = height;
-				
-				if (ctx) {
-					ctx.drawImage(img, 0, 0, width, height);
-					canvas.toBlob((thumbnailBlob) => {
-						if (thumbnailBlob) {
-							const reader = new FileReader();
-							reader.onloadend = () => {
-								resolve(reader.result as string);
-							};
-							reader.readAsDataURL(thumbnailBlob);
-						} else {
-							reject(new Error('Failed to create thumbnail'));
-						}
-					}, 'image/jpeg', 0.7);
-				} else {
-					reject(new Error('Failed to get canvas context'));
-				}
-				
-				// Clean up
-				URL.revokeObjectURL(img.src);
-			};
-			
-			img.onerror = () => {
-				reject(new Error('Failed to load image'));
-			};
-			
-			img.src = URL.createObjectURL(blob);
-		});
-	}
-	
+
 	async function openRecentComic(comicMeta: ComicMetadata) {
 		try {
 			setLoading(true, 'Loading comic...');
-			
-			// Get the stored comic file
+
 			const storedComic = await comicStorage.getComic(comicMeta.id);
 			if (!storedComic) {
 				alert('Comic not found in storage');
@@ -314,11 +70,8 @@ import { comicStorage, type ComicMetadata } from '$lib/storage/comicStorage.js';
 				return;
 			}
 
-			// Create a File object from the stored blob
-			const file = comicStorage.createFile(storedComic);
-			
-			// Use the existing openExistingComic function
-			await openExistingComic(comicMeta.id, file);
+			const file = comicStorage.createFile(storedComic as StoredComic);
+			await openExistingComic(comicMeta.id, file, loadComics);
 			
 		} catch (error) {
 			console.error('Failed to open comic:', error);
