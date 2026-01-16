@@ -1,7 +1,13 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { currentPageIndex, viewSettings } from '../store/session.js';
+	import { filterStore, type Filter } from '$lib/store/filterStore';
 	import type { ComicBook } from '../../types/comic.js';
+	import FilterButton from './FilterButton.svelte';
+	import { applyMonochrome } from '$lib/filters/monochrome';
+	import { applyColorCorrection } from '$lib/filters/colorCorrection';
+	import { applyVintage } from '$lib/filters/vintage';
+	import { applyVibrant } from '$lib/filters/vibrant';
 
 	const UI_HIDE_DELAY = 2200;
 	const MAX_ZOOM = 5;
@@ -38,9 +44,15 @@
 	let pinchStartZoom = 1;
 
 	let hasAppliedInitialView = false;
+	let activeFilter: Filter = 'none';
 
 	$: if (comic && $currentPageIndex !== undefined) {
 		loadCurrentPage();
+	}
+
+	$: if (comic && $filterStore[comic.id]) {
+		activeFilter = $filterStore[comic.id];
+		drawCurrentImage();
 	}
 
 	onMount(() => {
@@ -432,6 +444,23 @@
 		ctx.scale(dpr, dpr);
 		ctx.clearRect(0, 0, displayWidth, displayHeight);
 		ctx.drawImage(currentImage, panX, panY, currentImage.width * zoomLevel, currentImage.height * zoomLevel);
+
+		// Apply filter
+		switch (activeFilter) {
+			case 'monochrome':
+				applyMonochrome(ctx);
+				break;
+			case 'color-correction':
+				applyColorCorrection(ctx);
+				break;
+			case 'vintage':
+				applyVintage(ctx);
+				break;
+			case 'vibrant':
+				applyVibrant(ctx);
+				break;
+		}
+
 		ctx.restore();
 	}
 
@@ -479,6 +508,7 @@
 <svelte:window on:resize={drawCurrentImage} />
 
 <div class="viewer" class:ui-visible={isUiVisible || isUiPinned}>
+	<FilterButton {comic} />
 	<div
 		class="canvas-layer"
 		class:dragging={isDragging}
