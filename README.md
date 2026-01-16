@@ -1,70 +1,58 @@
-# Disclaimer
-
-This application is a comic book reader. It does not host, distribute, or include any copyrighted comic book files.  
-Users are solely responsible for the content they choose to open with this software.  
-The maintainers and contributors accept no liability for misuse or distribution of third-party content.
-
-Contains AI generated code.
+> [!IMPORTANT]
+> This is a pilot project to experiment with AI and see if it's viable to create at least semi-AI managed project reliably, hence it includes almost exclusively AI code, as well as AI automations.
 
 # Online Comic Reader
 
-Online Comic Reader is a SvelteKit application for reading CBZ/CBR comics directly in the browser. It focuses on fast archive extraction, an immersive viewer, and seamless device persistence so you can pick up exactly where you left off.
+Online Comic Reader is a SvelteKit application for reading CBZ/CBR comics directly in your browser. It uses client-side web workers to quickly extract archives, allowing you to read your comics offline. Your library and reading progress are stored locally in your browser using IndexedDB.
+
+This application does not host or distribute any comic book files. Users are solely responsible for the content they choose to open.
 
 ## Features
 
-- **Instant archive loading** – client-side extraction for `.cbz` and `.cbr` files with pinch/scroll zoom and smooth panning.
-- **Auto-hiding viewer UI** – tap or move to reveal controls; pin the overlay when you want it to stay.
-- **Touch & keyboard friendly** – left/right taps, arrow keys, pinch-to-zoom, drag to pan.
-- **Local library** – comics, thumbnails, and progress are cached in IndexedDB for quick reopen and offline access.
-- **Installable PWA** – ships with a manifest and Workbox configuration so you can add it to your home screen and use it offline.
-- **Recent history** – home view shows storage usage and last-read progress; library lists everything stored locally.
+- **Client-Side Archive Processing**: Extracts `.cbz`, `.zip`, `.cbr`, and `.rar` files directly in the browser.
+- **Offline Library**: Stores comic files, metadata, and reading progress in IndexedDB for offline access.
+- **Immersive Viewer**: A full-screen viewer with zoom, pan, and navigation controls that auto-hide.
+- **Progress Tracking**: Automatically saves your current page and reading progress.
+- **PWA Support**: Installable as a Progressive Web App for a native-like experience.
 
 ## Project Structure
 
 ```
 src/
 ├── lib/
-│   ├── archive/        # libarchive.js wrapper for extracting images
-│   ├── storage/        # browser storage helpers (IndexedDB blobs)
-│   ├── store/          # Svelte writable stores for session state
-│   └── ui/             # UI components (Viewer.svelte, etc.)
+│   ├── archive/        # Handles archive extraction using libarchive.js
+│   ├── storage/        # Manages IndexedDB for storing comic files and metadata
+│   ├── store/          # Svelte stores for managing session state
+│   └── ui/             # Reusable UI components like the Viewer
 ├── routes/
-│   ├── +page.svelte    # Landing page with uploader and recent shelf
-│   ├── reader/         # Reader route (+page.svelte) that mounts Viewer
-│   └── library/        # Dedicated library page for offline collection
-└── types/              # Shared TypeScript interfaces
+│   ├── +page.svelte    # Home page with file uploader and recent comics
+│   ├── reader/         # The main comic reading interface
+│   └── library/        # View and manage all stored comics
+└── types/              # TypeScript interfaces for the application
 ```
-
-Key supporting files:
-
-- `vite.config.ts` – Vite + PWA plugin configuration.
-- `svelte.config.js` – SvelteKit adapter/static build setup.
-- `package.json` – project scripts and dependencies.
 
 ## Getting Started
 
+First, install the dependencies:
+
 ```bash
-# 1. Install dependencies
 npm install
-
-# 2. Start the development server
-npm run dev
-
-# 3. Open the app at http://localhost:5173
 ```
 
-Drag a `.cbz`/`.cbr` file onto the home page (or tap the drop zone on mobile) to start reading. The viewer automatically caches the file and your progress locally. Revisit the home page or library to reopen cached comics without reuploading.
+Then, start the development server:
 
-## Building
+```bash
+npm run dev
+```
 
-Create a production build with:
+Open your browser and navigate to `http://localhost:5173`. You can upload a comic by dragging and dropping a file or by clicking the upload area.
+
+## Building for Production
+
+To create a production version of the app, run:
 
 ```bash
 npm run build
 ```
 
-Serve the generated static output from the `build/` directory with any static file host.
-
-## License
-
-MIT License - feel free to use and modify as needed.
+This will create a `build/` directory with the static files needed for deployment.
