@@ -2,9 +2,11 @@
 	import '../app.css';
 	import { onMount } from 'svelte';
 	import { error, clearError } from '$lib/store/session.js';
+	import { filterStore } from '$lib/store/filterStore';
 	
 	// Track mouse usage for focus styles
 	onMount(() => {
+		filterStore.init();
 		let isMouseUser = false;
 		
 		function handleMouseDown() {
