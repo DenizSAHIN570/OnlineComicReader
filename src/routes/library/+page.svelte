@@ -1,10 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { comicStorage, type ComicMetadata } from '$lib/storage/comicStorage';
+	import { comicStorage, type ComicMetadata, type StoredComic } from '$lib/storage/comicStorage';
 	import { setComic, setLoading } from '$lib/store/session';
 	import ArchiveManager from '$lib/archive/archiveManager';
-	import { IndexedDBStore } from '$lib/store/indexeddb';
 
 	let comics: ComicMetadata[] = [];
 	let storageInfo = { usage: 0, quota: 0, percentage: 0 };
@@ -39,18 +38,16 @@
 			}
 
 			// Create a File object from the stored blob
-			const file = comicStorage.createFile(storedComic);
+			const file = comicStorage.createFile(storedComic as StoredComic);
 			
 			// Initialize archive manager and load the comic
 			const archiveManager = new ArchiveManager();
-			const dbStore = new IndexedDBStore();
-			await dbStore.init();
 			
 			// Generate comic ID
 			const comicId = `${file.name}-${file.size}`;
 			
 			// Check if we have metadata
-			let comic = await dbStore.getComic(comicId);
+			let comic = await comicStorage.getComic(comicId);
 			
 			if (!comic) {
 				// Create new comic metadata
@@ -69,14 +66,14 @@
 					lastRead: new Date()
 				};
 				
-				await dbStore.saveComic(comic);
+				await comicStorage.saveComicMetadata(comic);
 			} else {
 				// Update last read time
 				comic.lastRead = new Date();
 				if (storedComic.currentPage !== undefined) {
 					comic.currentPage = storedComic.currentPage;
 				}
-				await dbStore.saveComic(comic);
+				await comicStorage.saveComicMetadata(comic);
 			}
 			
 			await comicStorage.updateLastAccessed(comicId, {
