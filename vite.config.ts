@@ -8,10 +8,10 @@ export default defineConfig({
 		VitePWA({
 			registerType: 'autoUpdate',
 			manifest: {
-				name: 'Online Comic Reader',
-				short_name: 'Comic Reader',
+				name: 'ComiKaiju - Offline Comic Book Reader',
+				short_name: 'ComiKaiju',
 				description: 'A fast, browser-based comic book reader for CBZ and CBR files',
-				theme_color: '#4299e1',
+				theme_color: '#ff6600',
 				icons: [
 					{
 						src: '/favicon.svg',
