@@ -1,11 +1,11 @@
 {
-  "name": "Online Comic Reader",
-  "short_name": "Comic Reader",
+  "name": "ComiKaiju - Offline Comic Book Reader",
+  "short_name": "ComiKaiju",
   "description": "A fast, browser-based comic book reader for CBZ and CBR files",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
-  "theme_color": "#4299e1",
+  "theme_color": "#ff6600",
   "orientation": "any",
   "icons": [
     {
@@ -13,6 +13,17 @@
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any maskable"
+    }
+  ],
+  "file_handlers": [
+    {
+      "action": "/",
+      "accept": {
+        "application/x-cbz": [".cbz"],
+        "application/vnd.comicbook+zip": [".cbz"],
+        "application/x-cbr": [".cbr"],
+        "application/vnd.comicbook-rar": [".cbr"]
+      }
     }
   ]
 }

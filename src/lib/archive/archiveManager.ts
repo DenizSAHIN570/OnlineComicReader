@@ -3,9 +3,9 @@
 
 import type { ComicPage } from '../../types/comic.js';
 import { logger } from '../services/logger.js';
+import { Archive } from 'libarchive.js';
 
 class ArchiveManager {
-	private Archive: any = null;
 	private isInitialized = false;
 	private initPromise: Promise<void> | null = null;
 
@@ -17,11 +17,7 @@ class ArchiveManager {
 
 		this.initPromise = (async () => {
 			try {
-				// Dynamic import to avoid bundling issues
-				const { Archive } = await import('libarchive.js');
-				this.Archive = Archive;
-				
-				await Archive.init({
+				Archive.init({
 					workerUrl: '/libarchive/worker-bundle.js'
 				});
 				
@@ -48,7 +44,7 @@ class ArchiveManager {
 			try {
 
 				// Open the archive
-				const archive = await this.Archive.open(file);
+				const archive = await Archive.open(file);
 				logger.info('ArchiveManager', `Opened archive: ${file.name}`);
 
 				// Get file listing

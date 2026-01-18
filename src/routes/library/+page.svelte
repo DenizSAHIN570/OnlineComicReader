@@ -6,19 +6,87 @@
 	import { setComic, setLoading, setError } from '$lib/store/session';
 	import ArchiveManager from '$lib/archive/archiveManager';
 	import { logger } from '$lib/services/logger';
+	import { directoryService, type DirectoryFile } from '$lib/services/directoryService';
 
 	let items = $state<FileSystemItem[]>([]);
 	let loading = $state(true);
+	
+	// Local Folder State
+	let folderHandle = $state<FileSystemDirectoryHandle | null>(null);
+	let folderFiles = $state<DirectoryFile[]>([]);
+	let folderLoading = $state(false);
 
 	onMount(async () => {
 		try {
 			await comicStorage.init();
-			await loadLibrary();
+			await Promise.all([
+				loadLibrary(),
+				checkStoredFolder()
+			]);
 		} catch (e) {
 			logger.error('Library', 'Initialization failed', e);
 			setError('Failed to load library', 'error');
 		}
 	});
+
+	async function checkStoredFolder() {
+		folderLoading = true;
+		try {
+			const handle = await directoryService.getStoredFolder();
+			if (handle) {
+				folderHandle = handle;
+				folderFiles = await directoryService.listComics(handle);
+			}
+		} catch (err) {
+			logger.error('Library', 'Failed to restore folder', err);
+		} finally {
+			folderLoading = false;
+		}
+	}
+
+	async function openFolder() {
+		try {
+			const handle = await directoryService.openComicsFolder();
+			if (handle) {
+				folderHandle = handle;
+				folderLoading = true;
+				folderFiles = await directoryService.listComics(handle);
+				folderLoading = false;
+			}
+		} catch (err) {
+			setError('Failed to open folder', 'error');
+		}
+	}
+
+	async function openLocalFile(file: DirectoryFile) {
+		try {
+			setLoading(true, 'Opening local comic...');
+			const fileData = await file.handle.getFile();
+			
+			const archiveManager = new ArchiveManager();
+			// We don't have stored metadata for local files usually, or we could generate it temporarily
+			// For now, treat as fresh open
+			const pages = await archiveManager.openArchive(fileData);
+			
+			const comic = {
+				id: 'local-' + file.name, // Temporary ID
+				title: file.name.replace(/\.(cbz|zip|cbr|rar)$/i, ''),
+				filename: file.name,
+				pages: pages.map(p => ({ filename: p.filename, index: p.index })),
+				currentPage: 0,
+				totalPages: pages.length,
+				lastRead: new Date()
+			};
+
+			setComic(comic, fileData);
+			await goto('/reader');
+		} catch (err) {
+			logger.error('Library', 'Failed to open local file', err);
+			setError('Failed to open local comic', 'error');
+		} finally {
+			setLoading(false);
+		}
+	}
 
 	async function loadLibrary() {
 		loading = true;
@@ -114,11 +182,53 @@
             <h1>Full Library</h1>
         </div>
         <div class="header-right">
-            <span class="count">{items.length} Comics</span>
+            <button class="folder-btn" onclick={openFolder}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                </svg>
+                {folderHandle ? 'Change Folder' : 'Open Folder'}
+            </button>
+            <span class="count">{items.length} Imported</span>
         </div>
     </header>
 
     <div class="library-content">
+        {#if folderHandle}
+            <section class="folder-section">
+                <div class="section-header">
+                    <h2>Local: {folderHandle.name}</h2>
+                    <span class="count">{folderFiles.length} items</span>
+                </div>
+                
+                {#if folderLoading}
+                    <div class="loading">Scanning folder...</div>
+                {:else if folderFiles.length === 0}
+                     <div class="empty-folder">No comic files found in this folder.</div>
+                {:else}
+                    <div class="comic-grid">
+                        {#each folderFiles as file}
+                             <div class="comic-card local" onclick={() => openLocalFile(file)} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && openLocalFile(file)}>
+                                <div class="card-cover">
+                                    <div class="placeholder local-placeholder">
+                                        <span>{file.name.slice(0, 3)}</span>
+                                    </div>
+                                </div>
+                                <div class="card-info">
+                                    <div class="title" title={file.name}>{file.name}</div>
+                                    <div class="meta">Local File</div>
+                                </div>
+                            </div>
+                        {/each}
+                    </div>
+                {/if}
+            </section>
+            <hr class="divider" />
+        {/if}
+
+        <div class="section-header">
+            <h2>Imported Library</h2>
+        </div>
+
         {#if loading}
             <div class="loading">Loading...</div>
         {:else if items.length === 0}
@@ -191,6 +301,65 @@
 
     .back-link:hover {
         color: var(--color-primary);
+    }
+
+    .header-right {
+        display: flex;
+        align-items: center;
+        gap: 1.5rem;
+    }
+
+    .folder-btn {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.5rem 1rem;
+        background: var(--color-bg-surface);
+        border: 1px solid var(--color-border);
+        border-radius: 6px;
+        color: var(--color-text-main);
+        font-size: 0.9rem;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+
+    .folder-btn:hover {
+        border-color: var(--color-primary);
+        color: var(--color-primary);
+    }
+
+    .section-header {
+        display: flex;
+        align-items: baseline;
+        gap: 1rem;
+        margin-bottom: 1.5rem;
+    }
+
+    .section-header h2 {
+        font-size: 1.25rem;
+        font-weight: 600;
+        margin: 0;
+    }
+
+    .folder-section {
+        margin-bottom: 3rem;
+    }
+
+    .divider {
+        border: 0;
+        border-top: 1px solid var(--color-border);
+        margin: 2rem 0;
+        opacity: 0.5;
+    }
+
+    .local-placeholder {
+        background: var(--color-bg-tertiary, #2d3748);
+        color: var(--color-primary);
+    }
+
+    .empty-folder {
+        color: var(--color-text-muted);
+        font-style: italic;
     }
 
     h1 {

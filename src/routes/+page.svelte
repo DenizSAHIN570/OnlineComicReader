@@ -3,6 +3,7 @@
 	import { comicStorage } from '$lib/storage/comicStorage.js';
 	import { setLoading, setError, setComic } from '$lib/store/session.js';
 	import { handleFile, cleanupComicProcessor } from '$lib/services/comicProcessor.js';
+	import { directoryService, type DirectoryFile } from '$lib/services/directoryService';
 	import ThemeToggle from '$lib/ui/ThemeToggle.svelte';
 	import { logger } from '$lib/services/logger';
     import ArchiveManager from '$lib/archive/archiveManager.js';
@@ -12,18 +13,103 @@
 	let fileInput = $state<HTMLInputElement>();
 	let dragActive = $state(false);
 	let recentComics = $state<(FileSystemItem & { metadata?: ComicBook })[]>([]);
+    let localFiles = $state<(DirectoryFile & { metadata?: ComicBook })[]>([]);
+    let localFolderHandle = $state<FileSystemDirectoryHandle | null>(null);
 	let storageInfo = $state({ usage: 0, quota: 0, percentage: 0 });
     let openMenuId = $state<string | null>(null);
+    let fileSystemSupported = $state(false);
 
 	onMount(async () => {
 		try {
+            fileSystemSupported = 'showDirectoryPicker' in window;
+
             await comicStorage.init();
-			await loadComics();
+			await Promise.all([
+                loadComics(),
+                fileSystemSupported ? loadLocalLibrary() : Promise.resolve()
+            ]);
 		} catch (error) {
 			logger.error('Home', 'Failed to initialize', error);
 			setError('Failed to initialize application', 'error');
 		}
 	});
+
+    async function loadLocalLibrary() {
+        try {
+            const handle = await directoryService.getStoredFolder();
+            if (handle) {
+                localFolderHandle = handle;
+                const files = await directoryService.listComics(handle);
+                
+                // Load metadata for local files to show progress
+                localFiles = await Promise.all(files.map(async (f) => {
+                    const id = `local-${f.name}`;
+                    const metadata = await comicStorage.getComicMetadata(id);
+                    return { ...f, metadata: metadata || undefined };
+                }));
+            }
+        } catch (err) {
+            logger.error('Home', 'Failed to load local library', err);
+        }
+    }
+
+    async function openLocalFolder() {
+        try {
+            const handle = await directoryService.openComicsFolder();
+            if (handle) {
+                localFolderHandle = handle;
+                setLoading(true, 'Scanning folder...');
+                await loadLocalLibrary();
+            }
+        } catch (err: any) {
+            logger.error('Home', 'Failed to open local folder', err);
+            setError(`Failed to open folder: ${err.message || 'Unknown error'}`, 'error');
+        } finally {
+            setLoading(false);
+        }
+    }
+
+    async function openLocalComic(item: DirectoryFile & { metadata?: ComicBook }) {
+        try {
+            logger.info('Home', `Opening local comic: ${item.name}`);
+            setLoading(true, 'Opening local comic...');
+            
+            const file = await item.handle.getFile();
+            const id = `local-${item.name}`;
+            
+            let comic = item.metadata;
+            
+            // If no metadata, or no pages, we need to parse the archive
+            if (!comic || !comic.pages || comic.pages.length === 0) {
+                 const archiveManager = new ArchiveManager();
+                 const pages = await archiveManager.openArchive(file);
+                 
+                 comic = {
+                    id,
+                    title: item.name.replace(/\.(cbz|zip|cbr|rar)$/i, ''),
+                    filename: item.name,
+                    pages: pages.map(p => ({ filename: p.filename, index: p.index })),
+                    currentPage: 0,
+                    totalPages: pages.length,
+                    lastRead: new Date()
+                 };
+                 await comicStorage.saveComicMetadata(comic);
+            } else {
+                comic.lastRead = new Date();
+                await comicStorage.saveComicMetadata(comic);
+            }
+
+            if (!comic) throw new Error('Failed to initialize comic metadata');
+
+            setComic(comic, file);
+            await goto('/reader');
+        } catch (error) {
+            logger.error('Home', 'Failed to open local comic', error);
+            setError('Failed to open local comic', 'error');
+        } finally {
+            setLoading(false);
+        }
+    }
 
 	async function loadComics() {
 		try {
@@ -49,29 +135,6 @@
 			};
 		} catch (err) {
 			logger.error('Home', 'Failed to load comics', err);
-		}
-	}
-
-	onDestroy(() => {
-		cleanupComicProcessor();
-	});
-
-	function handleDragOver(event: DragEvent) {
-		event.preventDefault();
-		dragActive = true;
-	}
-
-	function handleDragLeave() {
-		dragActive = false;
-	}
-
-	async function handleDrop(event: DragEvent) {
-		event.preventDefault();
-		dragActive = false;
-
-		const files = event.dataTransfer?.files;
-		if (files && files.length > 0) {
-			await handleFile(files[0], loadComics);
 		}
 	}
 
@@ -142,6 +205,25 @@
 			setError('Failed to open comic: ' + (error instanceof Error ? error.message : 'Unknown error'), 'error');
 		} finally {
 			setTimeout(() => setLoading(false), 500);
+		}
+	}
+	
+	function handleDragOver(event: DragEvent) {
+		event.preventDefault();
+		dragActive = true;
+	}
+
+	function handleDragLeave() {
+		dragActive = false;
+	}
+
+	async function handleDrop(event: DragEvent) {
+		event.preventDefault();
+		dragActive = false;
+
+		const files = event.dataTransfer?.files;
+		if (files && files.length > 0) {
+			await handleFile(files[0], loadComics);
 		}
 	}
 	
@@ -230,14 +312,79 @@
 	</header>
 
     <main class="main-content">
-        <!-- Recent Comics (NOW AT TOP, ONLY IF EXISTS) -->
+        <!-- Local Library Shelf (If Connected) -->
+        {#if localFiles.length > 0}
+            <section class="recent-section local-library">
+                <div class="section-container">
+                    <div class="section-header">
+                        <h3>
+                            <span class="pill local-pill"></span>
+                            Local: {localFolderHandle ? localFolderHandle.name : 'Unknown Folder'}
+                        </h3>
+                        <button class="view-all text-btn" onclick={openLocalFolder}>
+                            Change Folder
+                        </button>
+                    </div>
+                    
+                    <div class="bookshelf">
+                        <div class="shelf-row">
+                            {#each localFiles as item}
+                                <div class="comic-book">
+                                    <div class="comic-cover">
+                                        <div 
+                                            class="cover-action" 
+                                            role="button" 
+                                            tabindex="0" 
+                                            onclick={() => openLocalComic(item)} 
+                                            onkeydown={(e) => e.key === 'Enter' && openLocalComic(item)}
+                                        >
+                                            <div class="placeholder-cover local-cover">
+                                                <div class="placeholder-icon">
+                                                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                                                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                                                    </svg>
+                                                </div>
+                                                <div class="placeholder-title">{item.name.replace(/\.(cbz|zip|cbr|rar)$/i, '')}</div>
+                                            </div>
+                                            {#if item.metadata && item.metadata.totalPages > 0}
+                                                <div class="progress-badge">
+                                                    {Math.min(item.metadata.currentPage + 1, item.metadata.totalPages)} / {item.metadata.totalPages}
+                                                </div>
+                                                <div class="progress-bar-container">
+                                                    <div class="progress-bar-fill" style="width: {((item.metadata.currentPage + 1) / item.metadata.totalPages) * 100}%"></div>
+                                                </div>
+                                            {/if}
+                                        </div>
+                                    </div>
+                                    <div class="comic-info-container">
+                                        <div 
+                                            class="comic-info" 
+                                            role="button" 
+                                            tabindex="0" 
+                                            onclick={() => openLocalComic(item)}
+                                            onkeydown={(e) => e.key === 'Enter' && openLocalComic(item)}
+                                        >
+                                            <div class="comic-title">{item.name}</div>
+                                            <div class="comic-meta">Local File</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            {/each}
+                        </div>
+                        <div class="shelf-support"></div>
+                    </div>
+                </div>
+            </section>
+        {/if}
+
+        <!-- Recent Comics (Imported) -->
         {#if recentComics.length > 0}
             <section class="recent-section">
                 <div class="section-container">
                     <div class="section-header">
                         <h3>
                             <span class="pill"></span>
-                            Jump Back In
+                            Recent Imports
                         </h3>
                         <a href="/library" class="view-all">
                             View All <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" /></svg>
@@ -338,46 +485,74 @@
                         A private, browser-based reader for your CBZ and CBR collection. No tracking, no servers, just you and your stories.
                     </p>
                 {:else}
-                    <h2 class="hero-title-small">Add More Stories</h2>
+                    <h2 class="hero-title-small">Add More Comics</h2>
                 {/if}
                 
                 <!-- Upload Area -->
-                <div class="upload-container">
-                    <div 
-                        class="drop-zone"
-                        class:active={dragActive}
-                        ondragover={handleDragOver}
-                        ondragleave={handleDragLeave}
-                        ondrop={handleDrop}
-                        role="button"
-                        tabindex="0"
-                        onclick={() => fileInput?.click()}
-                        onkeydown={(e) => e.key === 'Enter' && fileInput?.click()}
-                    >
-                        <div class="drop-zone-overlay"></div>
-                        <div class="drop-content">
-                            <div class="upload-icon-circle">
-                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-                                </svg>
-                            </div>
-                            <h3>{recentComics.length > 0 ? 'Upload More' : 'Upload Comic'}</h3>
-                            <p>Drag & drop or click to browse</p>
-                            <div class="formats">
-                                <span>CBZ</span>
-                                <span>CBR</span>
-                                <span>ZIP</span>
-                                <span>RAR</span>
+                <div class="hero-actions">
+                    <div class="upload-container">
+                        <div 
+                            class="drop-zone"
+                            class:active={dragActive}
+                            ondragover={handleDragOver}
+                            ondragleave={handleDragLeave}
+                            ondrop={handleDrop}
+                            role="button"
+                            tabindex="0"
+                            onclick={() => fileInput?.click()}
+                            onkeydown={(e) => e.key === 'Enter' && fileInput?.click()}
+                        >
+                            <div class="drop-zone-overlay"></div>
+                            <div class="drop-content">
+                                <div class="upload-icon-circle">
+                                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                                    </svg>
+                                </div>
+                                <h3>{recentComics.length > 0 ? 'Import File' : 'Import Comic'}</h3>
+                                <p>Drag & drop or click</p>
                             </div>
                         </div>
+                        <input
+                            bind:this={fileInput}
+                            type="file"
+                            accept=".cbz,.zip,.cbr,.rar"
+                            onchange={handleFileInput}
+                            style="display: none;"
+                        />
                     </div>
-                    <input
-                        bind:this={fileInput}
-                        type="file"
-                        accept=".cbz,.zip,.cbr,.rar"
-                        onchange={handleFileInput}
-                        style="display: none;"
-                    />
+
+                    <div class="or-divider">OR</div>
+
+                    <button 
+                        class="sync-folder-btn" 
+                        class:disabled={!fileSystemSupported}
+                        onclick={fileSystemSupported ? openLocalFolder : undefined}
+                        disabled={!fileSystemSupported}
+                        title={!fileSystemSupported ? "Requires a Chromium-based browser (Chrome, Edge)" : "Sync a local folder"}
+                    >
+                        <div class="icon-circle" class:disabled-icon={!fileSystemSupported}>
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                            </svg>
+                        </div>
+                        <div class="btn-content">
+                            <h3>
+                                {#if !fileSystemSupported}
+                                    Not Supported
+                                {:else}
+                                    {localFolderHandle ? 'Change Folder' : 'Sync Folder'}
+                                {/if}
+                            </h3>
+                            <p>
+                                {#if !fileSystemSupported}
+                                    Use Chrome/Edge. (Brave requires shields down)
+                                {:else}
+                                    Read directly from disk
+                                {/if}
+                            </p>
+                        </div>
+                    </button>
                 </div>
             </div>
         </section>
@@ -505,21 +680,6 @@
         display: flex;
         align-items: center;
         gap: 1rem;
-    }
-
-    .icon-btn {
-        padding: 0.5rem;
-        color: var(--color-text-secondary);
-        border-radius: 0.5rem;
-        transition: all 0.2s;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-
-    .icon-btn:hover {
-        color: var(--color-primary);
-        background-color: var(--color-bg-secondary);
     }
 
     /* Storage Widget */
@@ -735,16 +895,109 @@
         .hero-title-small { font-size: 2rem; }
     }
 
-    .upload-container { max-width: 36rem; margin: 0 auto; }
-    .drop-zone { position: relative; border: 2px dashed var(--color-border); border-radius: 1rem; padding: 2rem; background-color: var(--color-bg-surface); cursor: pointer; transition: all 0.3s ease; overflow: hidden; }
-    .drop-zone:hover { border-color: var(--color-primary); }
+    .hero-actions {
+        display: flex;
+        flex-direction: column;
+        gap: 1.5rem;
+        align-items: stretch; /* Ensure equal height */
+        justify-content: center;
+        max-width: 42rem;
+        margin: 0 auto;
+    }
+
+    @media (min-width: 640px) {
+        .hero-actions {
+            flex-direction: row;
+            gap: 2rem;
+        }
+    }
+
+    .upload-container, .sync-folder-btn {
+        width: 100%;
+        min-width: 200px;
+        display: flex;
+        flex-direction: column;
+    }
+
+    @media (min-width: 640px) {
+        .upload-container, .sync-folder-btn {
+            flex: 1 1 0px; /* Equal width on desktop */
+        }
+    }
+
+    .drop-zone { position: relative; border: 2px dashed var(--color-border); border-radius: 1rem; padding: 1.5rem; background-color: var(--color-bg-surface); cursor: pointer; transition: all 0.3s ease; overflow: hidden; height: 100%; box-sizing: border-box; }
+    .drop-zone:hover { border-color: var(--color-primary); transform: translateY(-2px); }
     .drop-content { position: relative; z-index: 10; display: flex; flex-direction: column; align-items: center; justify-content: center; }
-    .upload-icon-circle { width: 4rem; height: 4rem; background-color: var(--color-bg-secondary); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-bottom: 1rem; color: var(--color-primary); transition: transform 0.3s; }
+    .upload-icon-circle { width: 3rem; height: 3rem; background-color: var(--color-bg-secondary); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-bottom: 0.75rem; color: var(--color-primary); transition: transform 0.3s; }
     .drop-zone:hover .upload-icon-circle { transform: scale(1.1); }
-    .drop-content h3 { font-size: 1.125rem; font-weight: 700; margin-bottom: 0.25rem; }
-    .drop-content p { font-size: 0.875rem; color: var(--color-text-secondary); margin-bottom: 1rem; }
-    .formats { display: flex; gap: 0.5rem; }
-    .formats span { font-size: 0.625rem; font-weight: 700; color: var(--color-text-muted); background-color: var(--color-bg-main); border: 1px solid var(--color-border); padding: 0.25rem 0.5rem; border-radius: 0.25rem; }
+    .drop-content h3 { font-size: 1rem; font-weight: 700; margin-bottom: 0.25rem; margin-top: 0; }
+    .drop-content p { font-size: 0.8rem; color: var(--color-text-secondary); margin: 0; }
+    
+    .or-divider {
+        font-size: 0.8rem;
+        font-weight: 700;
+        color: var(--color-text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+
+    .sync-folder-btn {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 1.5rem;
+        background: var(--color-bg-surface);
+        border: 2px solid var(--color-border);
+        border-radius: 1rem;
+        color: var(--color-text-main);
+        cursor: pointer;
+        transition: all 0.3s ease;
+        height: 100%;
+        box-sizing: border-box;
+        width: 100%;
+    }
+
+    .sync-folder-btn:hover {
+        border-color: var(--color-primary);
+        transform: translateY(-2px);
+    }
+    
+    .sync-folder-btn.disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+        border-color: var(--color-border);
+        background-color: var(--color-bg-secondary);
+        transform: none !important;
+    }
+    
+    .disabled-icon {
+        background-color: var(--color-bg-secondary);
+        color: var(--color-text-muted);
+    }
+
+    .icon-circle {
+        width: 3rem; height: 3rem;
+        background-color: var(--color-bg-secondary);
+        border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        margin-bottom: 0.75rem;
+        color: var(--color-primary);
+        transition: transform 0.3s;
+    }
+
+    .sync-folder-btn:hover .icon-circle { transform: scale(1.1); }
+    .btn-content h3 { font-size: 1rem; font-weight: 700; margin-bottom: 0.25rem; margin-top: 0; }
+    .btn-content p { font-size: 0.8rem; color: var(--color-text-secondary); margin: 0; }
+
+    .local-library {
+        background-color: var(--color-bg-surface); /* Slightly different bg */
+        border-bottom: 1px solid var(--color-border);
+    }
+    
+    .local-pill { background-color: #10b981; /* Green for local */ }
+    .local-cover { background: linear-gradient(135deg, #059669 0%, #10b981 100%); }
+    .text-btn { background: none; border: none; padding: 0; font: inherit; cursor: pointer; text-decoration: underline; }
 
     /* Features Section */
     .features-section { padding: 5rem 1.5rem; border-top: 1px solid var(--color-border); }

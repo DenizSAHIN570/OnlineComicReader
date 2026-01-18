@@ -15,6 +15,7 @@ class ComicStorageManager {
 	private blobsStoreName = 'blobs';
 	private pagesStoreName = 'comicPages';
 	private metadataStoreName = 'comicMetadata';
+	private settingsStoreName = 'settings';
 
 	private db: IDBDatabase | null = null;
 	private initPromise: Promise<void> | null = null;
@@ -48,6 +49,11 @@ class ComicStorageManager {
 					if (!db.objectStoreNames.contains(this.pagesStoreName)) {
 						const pagesStore = db.createObjectStore(this.pagesStoreName, { keyPath: 'key' });
 						pagesStore.createIndex('comicId', 'comicId', { unique: false });
+					}
+					
+					// Settings Store
+					if (!db.objectStoreNames.contains(this.settingsStoreName)) {
+						db.createObjectStore(this.settingsStoreName);
 					}
 
 					// File System Stores (Merged from fileSystem.ts)
@@ -462,6 +468,32 @@ class ComicStorageManager {
 			};
 		}
 		return { usage: 0, quota: 0, percentage: 0 };
+	}
+
+	// --- Settings Operations ---
+
+	async saveSetting(key: string, value: any): Promise<void> {
+		const db = await this.ensureDB();
+		return new Promise((resolve, reject) => {
+			const tx = db.transaction(this.settingsStoreName, 'readwrite');
+			const store = tx.objectStore(this.settingsStoreName);
+			const request = store.put(value, key);
+			
+			request.onsuccess = () => resolve();
+			request.onerror = () => reject(new Error(`Failed to save setting: ${key}`));
+		});
+	}
+
+	async getSetting<T>(key: string): Promise<T | null> {
+		const db = await this.ensureDB();
+		return new Promise((resolve, reject) => {
+			const tx = db.transaction(this.settingsStoreName, 'readonly');
+			const store = tx.objectStore(this.settingsStoreName);
+			const request = store.get(key);
+
+			request.onsuccess = () => resolve((request.result as T) || null);
+			request.onerror = () => reject(new Error(`Failed to get setting: ${key}`));
+		});
 	}
 }
 
