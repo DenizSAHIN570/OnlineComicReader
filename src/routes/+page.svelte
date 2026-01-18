@@ -404,7 +404,7 @@
                         </svg>
                     </div>
                     <h3>Privacy First</h3>
-                    <p>No servers, no accounts, no tracking. Your comics never leave your device. We believe reading is a personal experience.</p>
+                    <p>No servers, no tracking, Zero-knowledge about you. Your comics never leave your device. We believe reading is a personal experience.</p>
                 </div>
 
                 <!-- Feature 3 -->
@@ -417,11 +417,26 @@
                     <h3>Blazing Fast</h3>
                     <p>Powered by WebAssembly and Service Workers. Instant page loads, deduplication, and optimized caching for smooth reading.</p>
                 </div>
+
+                <!-- Feature 4: Open Source -->
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                        </svg>
+                    </div>
+                    <h3>Open Source</h3>
+                    <p>Free and open source software. View the source code, contribute, or report issues on our <a href="https://github.com/DenizSAHIN570/OnlineComicReader" target="_blank" rel="noopener noreferrer" style="text-decoration: underline; color: var(--color-primary);">GitHub</a>.</p>
+                </div>
             </div>
         </section>
         
         <footer>
             <p>&copy; {new Date().getFullYear()} ComiKaiju. Built for readers.</p>
+            <p style="margin-top: 0.5rem; font-size: 0.75rem; opacity: 0.7;">
+                Powered by <a href="https://svelte.dev" target="_blank" rel="noopener noreferrer" style="color: var(--color-primary);">Svelte</a>.
+                <a href="https://github.com/DenizSAHIN570/OnlineComicReader" target="_blank" rel="noopener noreferrer" style="margin-left: 0.5rem; color: var(--color-text-secondary);">View on GitHub</a>
+            </p>
         </footer>
     </main>
 </div>
@@ -686,6 +701,7 @@
     .dropdown-item { display: flex; align-items: center; gap: 0.5rem; width: 100%; padding: 0.75rem 1rem; font-size: 0.85rem; background: transparent; border: none; color: var(--color-text-main); cursor: pointer; text-align: left; transition: background 0.2s; }
     .dropdown-item:hover { background: var(--color-bg-secondary); }
     .dropdown-item.delete { color: var(--color-status-error); }
+    .dropdown-item.delete:hover { background: rgba(239, 68, 68, 0.1); }
 
     /* Hero Section (Responsive logic) */
     .hero-section {
@@ -732,9 +748,9 @@
 
     /* Features Section */
     .features-section { padding: 5rem 1.5rem; border-top: 1px solid var(--color-border); }
-    .features-grid { max-width: 1280px; margin: 0 auto; display: grid; grid-template-columns: 1fr; gap: 2.5rem; }
-    @media (min-width: 768px) { .features-grid { grid-template-columns: repeat(3, 1fr); } }
-    .feature-card { background-color: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: 1rem; padding: 1.5rem; }
+    .features-grid { max-width: 1400px; margin: 0 auto; display: grid; grid-template-columns: 1fr; gap: 2rem; }
+    @media (min-width: 768px) { .features-grid { grid-template-columns: repeat(4, 1fr); } }
+    .feature-card { background-color: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: 1rem; padding: 1.5rem; display: flex; flex-direction: column; }
     .feature-icon { width: 3rem; height: 3rem; background-color: rgba(255, 102, 0, 0.1); color: var(--color-primary); border-radius: 0.75rem; display: flex; align-items: center; justify-content: center; margin-bottom: 1rem; }
     .feature-card h3 { font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem; }
     .feature-card p { color: var(--color-text-secondary); font-size: 0.95rem; line-height: 1.5; }
