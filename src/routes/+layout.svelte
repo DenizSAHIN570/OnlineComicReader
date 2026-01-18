@@ -4,10 +4,22 @@
 	import { error, clearError, isLoading, loadingMessage, setError } from '$lib/store/session.js';
 	import { themeStore } from '$lib/services/theme';
 	import { logger } from '$lib/services/logger';
+	import { dev } from '$app/environment';
 	
 	onMount(() => {
 		// Initialize services
 		themeStore.init();
+
+		// Register Service Worker for offline support (Production only)
+		if (!dev && 'serviceWorker' in navigator) {
+			navigator.serviceWorker.register('/service-worker.js', {
+				type: 'module'
+			}).then((registration) => {
+				logger.info('PWA', 'Service Worker registered', { scope: registration.scope });
+			}).catch((error) => {
+				logger.error('PWA', 'Service Worker registration failed', error);
+			});
+		}
 		
 		// Global Error Handlers
 		window.onerror = (msg, url, lineNo, columnNo, err) => {
