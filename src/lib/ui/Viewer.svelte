@@ -8,6 +8,7 @@
 	import { applyColorCorrection } from '$lib/filters/colorCorrection';
 	import { applyVintage } from '$lib/filters/vintage';
 	import { applyVibrant } from '$lib/filters/vibrant';
+	import { logger } from '$lib/services/logger';
 
 	const UI_HIDE_DELAY = 2200;
 	const MAX_ZOOM = 5;
@@ -115,12 +116,12 @@
 				isImageLoading = false;
 			};
 			img.onerror = () => {
-				console.error('Failed to load image');
+				logger.error('Viewer', 'Failed to load image');
 				isImageLoading = false;
 			};
 			img.src = currentImageUrl;
 		} catch (error) {
-			console.error('Failed to extract page:', error);
+			logger.error('Viewer', 'Failed to extract page', error);
 			isImageLoading = false;
 		}
 	}

@@ -1,274 +1,306 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { comicStorage, type ComicMetadata, type StoredComic } from '$lib/storage/comicStorage';
-	import { setComic, setLoading } from '$lib/store/session';
+	import { comicStorage } from '$lib/storage/comicStorage';
+	import type { FileSystemItem } from '../../types/comic';
+	import { setComic, setLoading, setError } from '$lib/store/session';
 	import ArchiveManager from '$lib/archive/archiveManager';
+	import { logger } from '$lib/services/logger';
 
-	let comics: ComicMetadata[] = [];
-	let storageInfo = { usage: 0, quota: 0, percentage: 0 };
-	let loading = true;
+	let items = $state<FileSystemItem[]>([]);
+	let loading = $state(true);
 
 	onMount(async () => {
-		await loadComics();
-	});
-
-	async function loadComics() {
 		try {
 			await comicStorage.init();
-			comics = await comicStorage.getAllComics();
-			comics.sort((a, b) => b.lastAccessed - a.lastAccessed);
-			storageInfo = await comicStorage.getStorageEstimate();
-			loading = false;
+			await loadLibrary();
+		} catch (e) {
+			logger.error('Library', 'Initialization failed', e);
+			setError('Failed to load library', 'error');
+		}
+	});
+
+	async function loadLibrary() {
+		loading = true;
+		try {
+			items = await comicStorage.getAllFiles();
 		} catch (error) {
-			console.error('Failed to load library:', error);
+			logger.error('Library', 'Failed to load library', error);
+			setError('Failed to load library', 'error');
+		} finally {
 			loading = false;
 		}
 	}
 
-	async function openComic(id: string) {
+	async function openComic(item: FileSystemItem) {
 		try {
-			setLoading(true, 'Loading comic...');
-			
-			const storedComic = await comicStorage.getComic(id);
-			if (!storedComic) {
-				alert('Comic not found');
-				setLoading(false);
-				return;
-			}
+			setLoading(true, 'Opening comic...');
+			const file = await comicStorage.getFile(item.id);
+			if (!file) throw new Error('File data not found');
 
-			// Create a File object from the stored blob
-			const file = comicStorage.createFile(storedComic as StoredComic);
-			
-			// Initialize archive manager and load the comic
 			const archiveManager = new ArchiveManager();
+			let comic = await comicStorage.getComicMetadata(item.id);
 			
-			// Generate comic ID
-			const comicId = `${file.name}-${file.size}`;
-			
-			// Check if we have metadata
-			let comic = await comicStorage.getComic(comicId);
-			
-			if (!comic) {
-				// Create new comic metadata
+			if (!comic || !comic.pages || comic.pages.length === 0) {
 				const pages = await archiveManager.openArchive(file);
-				
 				comic = {
-					id: comicId,
-					title: file.name.replace(/\.(cbz|zip|cbr|rar)$/i, ''),
-					filename: file.name,
-					pages: pages.map(p => ({
-						filename: p.filename,
-						index: p.index
-					})),
-					currentPage: storedComic.currentPage ?? 0,
+					id: item.id,
+					title: item.name.replace(/\.(cbz|zip|cbr|rar)$/i, ''),
+					filename: item.name,
+					pages: pages.map(p => ({ filename: p.filename, index: p.index })),
+					currentPage: 0,
 					totalPages: pages.length,
 					lastRead: new Date()
 				};
-				
-				await comicStorage.saveComicMetadata(comic);
+			    await comicStorage.saveComicMetadata(comic);
 			} else {
-				// Update last read time
 				comic.lastRead = new Date();
-				if (storedComic.currentPage !== undefined) {
-					comic.currentPage = storedComic.currentPage;
-				}
 				await comicStorage.saveComicMetadata(comic);
 			}
-			
-			await comicStorage.updateLastAccessed(comicId, {
+            
+            if (!comic) throw new Error('Failed to initialize comic metadata');
+
+			await comicStorage.updateLastAccessed(item.id, {
 				currentPage: comic.currentPage ?? 0,
 				totalPages: comic.totalPages
 			});
-			
-			// Set current comic and navigate to reader
+
 			setComic(comic, file);
-			setLoading(false);
 			await goto('/reader');
-			
 		} catch (error) {
-			console.error('Failed to open comic:', error);
+			logger.error('Library', 'Error opening comic', error);
+			setError('Failed to open comic', 'error');
+		} finally {
 			setLoading(false);
-			alert('Failed to open comic: ' + (error instanceof Error ? error.message : 'Unknown error'));
 		}
 	}
 
-	async function deleteComic(id: string, filename: string) {
-		if (confirm(`Delete "${filename}" from library?`)) {
-			try {
-				await comicStorage.deleteComic(id);
-				await loadComics();
-			} catch (error) {
-				console.error('Failed to delete comic:', error);
-				alert('Failed to delete comic');
-			}
+	async function deleteItem(item: FileSystemItem, e: MouseEvent) {
+        e.stopPropagation();
+        e.preventDefault();
+		if (!confirm(`Are you sure you want to delete "${item.name}"?`)) return;
+		try {
+			await comicStorage.deleteComic(item.id);
+			await loadLibrary();
+		} catch (error) {
+			logger.error('Library', 'Failed to delete item', error);
+			setError('Failed to delete item', 'error');
 		}
 	}
 
-	async function clearAll() {
-		if (confirm('Delete ALL comics from library? This cannot be undone.')) {
-			try {
-				await comicStorage.clearAll();
-				await loadComics();
-			} catch (error) {
-				console.error('Failed to clear library:', error);
-				alert('Failed to clear library');
-			}
-		}
-	}
-
-	function formatFileSize(bytes: number): string {
-		if (bytes === 0) return '0 Bytes';
+	function formatSize(bytes?: number) {
+		if (bytes === undefined) return '-';
+		if (bytes === 0) return '0 B';
 		const k = 1024;
-		const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+		const sizes = ['B', 'KB', 'MB', 'GB'];
 		const i = Math.floor(Math.log(bytes) / Math.log(k));
-		return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
-	}
-
-	function formatDate(timestamp: number): string {
-		const date = new Date(timestamp);
-		const now = new Date();
-		const diff = now.getTime() - date.getTime();
-		const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-
-		if (days === 0) return 'Today';
-		if (days === 1) return 'Yesterday';
-		if (days < 7) return `${days} days ago`;
-		return date.toLocaleDateString();
+		return Math.round((bytes / Math.pow(k, i)) * 10) / 10 + ' ' + sizes[i];
 	}
 </script>
 
 <svelte:head>
-	<title>Library - Online Comic Reader</title>
+	<title>Library - ComiKaiju</title>
 </svelte:head>
 
-<div class="min-h-screen bg-gray-50 py-8 px-4">
-	<div class="max-w-6xl mx-auto">
-		<!-- Header -->
-		<div class="mb-8">
-			<div class="flex items-center justify-between mb-4">
-				<div>
-					<h1 class="text-3xl font-bold text-gray-900">My Library</h1>
-					<p class="text-gray-600 mt-1">Comics stored locally in your browser</p>
-				</div>
-				<a
-					href="/"
-					class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition"
-				>
-					← Back to Home
-				</a>
-			</div>
+<div class="library-container">
+    <header class="library-header">
+        <div class="header-left">
+            <a href="/" class="back-link">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+                </svg>
+                Back
+            </a>
+            <h1>Full Library</h1>
+        </div>
+        <div class="header-right">
+            <span class="count">{items.length} Comics</span>
+        </div>
+    </header>
 
-			<!-- Storage Info -->
-			<div class="bg-white rounded-lg p-4 shadow-sm">
-				<div class="flex items-center justify-between mb-2">
-					<span class="text-sm text-gray-600">Storage Used</span>
-					<span class="text-sm font-medium text-gray-900">
-						{formatFileSize(storageInfo.usage)} / {formatFileSize(storageInfo.quota)}
-					</span>
-				</div>
-				<div class="w-full bg-gray-200 rounded-full h-2">
-					<div
-						class="bg-blue-500 h-2 rounded-full transition-all"
-						style="width: {Math.min(storageInfo.percentage, 100)}%"
-					></div>
-				</div>
-				<p class="text-xs text-gray-500 mt-1">
-					{storageInfo.percentage.toFixed(1)}% of available storage
-				</p>
-			</div>
-		</div>
-
-		<!-- Loading State -->
-		{#if loading}
-			<div class="text-center py-12">
-				<div class="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
-				<p class="text-gray-600 mt-4">Loading library...</p>
-			</div>
-		{/if}
-
-		<!-- Empty State -->
-		{#if !loading && comics.length === 0}
-			<div class="text-center py-12">
-				<svg
-					class="mx-auto h-24 w-24 text-gray-400"
-					fill="none"
-					viewBox="0 0 24 24"
-					stroke="currentColor"
-				>
-					<path
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						stroke-width="2"
-						d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"
-					/>
-				</svg>
-				<h2 class="mt-4 text-xl font-semibold text-gray-900">No comics in library</h2>
-				<p class="text-gray-600 mt-2">Upload a comic from the home page to get started</p>
-				<a
-					href="/"
-					class="mt-4 inline-block px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition"
-				>
-					Upload Comic
-				</a>
-			</div>
-		{/if}
-
-		<!-- Comics Grid -->
-		{#if !loading && comics.length > 0}
-			<div class="mb-4 flex justify-between items-center">
-				<p class="text-gray-600">{comics.length} comic{comics.length !== 1 ? 's' : ''} in library</p>
-				<button
-					on:click={clearAll}
-					class="text-sm text-red-600 hover:text-red-700 font-medium"
-				>
-					Clear All
-				</button>
-			</div>
-
-			<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-				{#each comics as comic (comic.id)}
-					<div class="bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow p-4">
-						<div class="flex items-start justify-between mb-3">
-							<div class="flex-1 min-w-0">
-								<h3 class="font-semibold text-gray-900 truncate" title={comic.filename}>
-									{comic.filename}
-								</h3>
-								<p class="text-sm text-gray-500 mt-1">
-									{formatFileSize(comic.fileSize)}
-								</p>
-							</div>
-						</div>
-
-					<div class="space-y-1 text-xs text-gray-500 mb-4">
-						<p>Uploaded: {formatDate(comic.uploadDate)}</p>
-						<p>Last read: {formatDate(comic.lastAccessed)}</p>
-						<p>
-							{#if comic.totalPages > 0}
-								Progress: Page {Math.min(comic.currentPage + 1, comic.totalPages)} of {comic.totalPages}
-							{:else}
-								Progress: Not started
-							{/if}
-						</p>
-					</div>
-
-						<div class="flex gap-2">
-							<button
-								on:click={() => openComic(comic.id)}
-								class="flex-1 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition text-sm font-medium"
-							>
-								Open
-							</button>
-							<button
-								on:click={() => deleteComic(comic.id, comic.filename)}
-								class="px-4 py-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition text-sm font-medium"
-							>
-								Delete
-							</button>
-						</div>
-					</div>
-				{/each}
-			</div>
-		{/if}
-	</div>
+    <div class="library-content">
+        {#if loading}
+            <div class="loading">Loading...</div>
+        {:else if items.length === 0}
+            <div class="empty">
+                <p>No comics found.</p>
+                <a href="/">Go upload some!</a>
+            </div>
+        {:else}
+            <div class="comic-grid">
+                {#each items as item (item.id)}
+                    <div class="comic-card" onclick={() => openComic(item)} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && openComic(item)}>
+                        <div class="card-cover">
+                            {#if item.thumbnail}
+                                <img src={item.thumbnail} alt={item.name} />
+                            {:else}
+                                <div class="placeholder">
+                                    <span>{item.name.slice(0, 2)}</span>
+                                </div>
+                            {/if}
+                            <button class="delete-btn" onclick={(e) => deleteItem(item, e)} title="Delete">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                            </button>
+                        </div>
+                        <div class="card-info">
+                            <div class="title" title={item.name}>{item.name}</div>
+                            <div class="meta">{formatSize(item.size)}</div>
+                        </div>
+                    </div>
+                {/each}
+            </div>
+        {/if}
+    </div>
 </div>
+
+<style>
+    .library-container {
+        min-height: 100vh;
+        background-color: var(--color-bg-main);
+        color: var(--color-text-main);
+        font-family: system-ui, sans-serif;
+        padding: 2rem;
+    }
+
+    .library-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 2rem;
+        padding-bottom: 1rem;
+        border-bottom: 1px solid var(--color-border);
+    }
+
+    .header-left {
+        display: flex;
+        align-items: center;
+        gap: 1.5rem;
+    }
+
+    .back-link {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        color: var(--color-text-secondary);
+        text-decoration: none;
+        font-weight: 500;
+        transition: color 0.2s;
+    }
+
+    .back-link:hover {
+        color: var(--color-primary);
+    }
+
+    h1 {
+        font-size: 1.5rem;
+        font-weight: 700;
+        margin: 0;
+    }
+
+    .count {
+        color: var(--color-text-muted);
+        font-size: 0.9rem;
+    }
+
+    .comic-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+        gap: 2rem;
+    }
+
+    .comic-card {
+        cursor: pointer;
+        transition: transform 0.2s;
+    }
+
+    .comic-card:hover {
+        transform: translateY(-5px);
+    }
+
+    .card-cover {
+        aspect-ratio: 2/3;
+        background: var(--color-bg-surface);
+        border: 1px solid var(--color-border);
+        border-radius: 8px;
+        overflow: hidden;
+        position: relative;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+
+    .card-cover img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+
+    .placeholder {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--color-bg-secondary);
+        color: var(--color-text-muted);
+        font-size: 2rem;
+        font-weight: 700;
+        text-transform: uppercase;
+    }
+
+    .delete-btn {
+        position: absolute;
+        top: 0.5rem;
+        right: 0.5rem;
+        width: 32px;
+        height: 32px;
+        background: rgba(0,0,0,0.7);
+        border: none;
+        border-radius: 4px;
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 0;
+        transition: opacity 0.2s, background 0.2s;
+        cursor: pointer;
+    }
+
+    .comic-card:hover .delete-btn {
+        opacity: 1;
+    }
+
+    .delete-btn:hover {
+        background: var(--color-status-error);
+    }
+
+    .card-info {
+        margin-top: 0.75rem;
+    }
+
+    .title {
+        font-size: 0.9rem;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        color: var(--color-text-main);
+    }
+
+    .meta {
+        font-size: 0.75rem;
+        color: var(--color-text-muted);
+        margin-top: 0.25rem;
+    }
+
+    .loading, .empty {
+        text-align: center;
+        padding: 4rem;
+        color: var(--color-text-secondary);
+    }
+
+    .empty a {
+        color: var(--color-primary);
+        text-decoration: underline;
+    }
+</style>

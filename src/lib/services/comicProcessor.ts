@@ -1,8 +1,8 @@
-
 import { goto } from '$app/navigation';
 import ArchiveManager from '$lib/archive/archiveManager.js';
 import { comicStorage } from '$lib/storage/comicStorage.js';
 import { setComic, setLoading, setError, clearError } from '$lib/store/session.js';
+import { logger } from './logger.js';
 import type { ComicBook } from '../../types/comic.js';
 
 let archiveManager: ArchiveManager | null = null;
@@ -85,18 +85,37 @@ export async function handleFile(file: File, loadComics: () => Promise<void>) {
 	setLoading(true, 'Processing archive...');
 
 	try {
-		const comicId = `${file.name}-${file.size}`;
-		const existingStoredComic = await comicStorage.getComic(comicId);
+        // 0. Check for duplicate before processing
+        const existingItem = await comicStorage.findDuplicate(file);
+        if (existingItem) {
+            logger.info('ComicProcessor', `Duplicate found: ${existingItem.name}, skipping processing.`);
+            
+            let comic = await comicStorage.getComicMetadata(existingItem.id);
+            if (comic) {
+                // Determine page count if not set (legacy)
+                if (!comic.totalPages) {
+                     const pages = await archiveManager.openArchive(file);
+                     comic.totalPages = pages.length;
+                     comic.pages = cleanPages(pages);
+                     await comicStorage.saveComicMetadata(comic);
+                }
 
-		if (existingStoredComic) {
-			console.log('Comic already in storage, opening...');
-			await openExistingComic(comicId, file, loadComics);
-			return;
-		}
+                await comicStorage.updateLastAccessed(existingItem.id, {
+                    currentPage: comic.currentPage,
+                    totalPages: comic.totalPages
+                });
+                
+                await loadComics();
+                setComic(comic, file);
+                logger.info('ComicProcessor', 'Opening existing comic');
+                await goto('/reader');
+                return;
+            }
+        }
 
-		console.log('New comic, processing...');
+		logger.info('ComicProcessor', 'New comic, processing...');
 		const pages = await archiveManager.openArchive(file);
-		console.log(`Loaded ${pages.length} pages from archive`);
+		logger.info('ComicProcessor', `Loaded ${pages.length} pages from archive`);
 
 		if (pages.length === 0) {
 			throw new Error('No images found in archive. The file may be corrupted or use an unsupported RAR version.');
@@ -107,18 +126,24 @@ export async function handleFile(file: File, loadComics: () => Promise<void>) {
 			try {
 				await archiveManager.loadPage(pages[0]);
 				if (pages[0].blob) {
-					console.log('Creating thumbnail...');
+					logger.info('ComicProcessor', 'Creating thumbnail...');
 					thumbnail = await createThumbnail(pages[0].blob);
-					console.log('Thumbnail created successfully');
+					logger.info('ComicProcessor', 'Thumbnail created successfully');
 				}
 			} catch (err) {
-				console.error('Failed to create thumbnail:', err);
+				logger.error('ComicProcessor', 'Failed to create thumbnail', err);
 			}
 		}
 
 		const cleanedPages = cleanPages(pages);
+		
+		// 1. Save File to File System (Root) - This handles the physical BLOB and Deduplication
+		const fsItem = await comicStorage.saveFile(file, { thumbnail });
+		logger.info('ComicProcessor', `Comic saved to FileSystem: ${fsItem.id}`);
+
+		// 2. Prepare Comic Metadata for Reader
 		const comic: ComicBook = {
-			id: comicId,
+			id: fsItem.id,
 			title: file.name.replace(/\.(cbz|zip|cbr|rar)$/i, ''),
 			filename: file.name,
 			pages: cleanedPages,
@@ -128,22 +153,17 @@ export async function handleFile(file: File, loadComics: () => Promise<void>) {
 			coverThumbnail: thumbnail
 		};
 
-		await comicStorage.saveComic(file, {
-			thumbnail,
-			totalPages: pages.length,
-			currentPage: comic.currentPage
-		});
-		console.log('Comic saved to offline storage with thumbnail');
-
+		// 3. Save Metadata for Reading Progress
 		await comicStorage.saveComicMetadata(comic);
 
 		await loadComics();
 
 		setComic(comic, file);
+		logger.info('ComicProcessor', 'Comic ready for reading');
 		await goto('/reader');
 
 	} catch (error) {
-		console.error('Failed to process file:', error);
+		logger.error('ComicProcessor', 'Failed to process file', error);
 		setError(error instanceof Error ? error.message : 'Failed to process file');
 	} finally {
 		setLoading(false);
@@ -154,50 +174,5 @@ export function cleanupComicProcessor() {
 	if (archiveManager) {
 		archiveManager.cleanup();
 		archiveManager = null;
-	}
-}
-
-export async function openExistingComic(comicId: string, file: File, loadComics: () => Promise<void>) {
-	try {
-		if (!archiveManager) {
-			archiveManager = new ArchiveManager();
-		}
-
-		const pages = await archiveManager.openArchive(file);
-		console.log(`Reopened archive with ${pages.length} pages`);
-
-		if (pages.length === 0) {
-			throw new Error('No images found in archive. The file may be corrupted or use an unsupported RAR version.');
-		}
-
-		const storedComic = await comicStorage.getComic(comicId);
-
-		const cleanedPages = cleanPages(pages);
-		const comic: ComicBook = {
-			id: comicId,
-			title: file.name.replace(/\.(cbz|zip|cbr|rar)$/i, ''),
-			filename: file.name,
-			pages: cleanedPages,
-			currentPage: storedComic?.currentPage ?? 0,
-			totalPages: pages.length,
-			lastRead: new Date(),
-			coverThumbnail: storedComic?.coverThumbnail
-		};
-
-		await comicStorage.updateLastAccessed(comicId, {
-			currentPage: comic.currentPage ?? 0,
-			totalPages: comic.totalPages
-		});
-
-		await loadComics();
-
-		setComic(comic, file);
-		setLoading(false);
-		await goto('/reader');
-
-	} catch (error) {
-		console.error('Failed to open existing comic:', error);
-		setError(error instanceof Error ? error.message : 'Failed to open comic');
-		setLoading(false);
 	}
 }

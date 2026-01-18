@@ -20,14 +20,15 @@ const createFilterStore = () => {
 		set,
 		update,
 		async init() {
+			// filterStore handles its own persistence for now or we can use localstorage
+            // for simplicity, let's keep it as is but fix the type errors if the methods moved
 			const settings = await comicStorage.loadAllFilterSettings();
 			set(settings as Record<string, Filter>);
 		},
 		async setFilter(comicId: string, filter: Filter) {
 			await comicStorage.saveFilterSetting(comicId, filter);
 			update((state) => {
-				state[comicId] = filter;
-				return state;
+				return { ...state, [comicId]: filter };
 			});
 		}
 	};
