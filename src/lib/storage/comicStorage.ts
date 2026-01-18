@@ -313,6 +313,48 @@ class ComicStorageManager {
 
 	// --- Metadata & Cache Operations ---
 
+	async saveFilterSetting(comicId: string, filter: string): Promise<void> {
+		const db = await this.ensureDB();
+		return new Promise((resolve, reject) => {
+			const transaction = db.transaction(this.metadataStoreName, 'readwrite');
+			const store = transaction.objectStore(this.metadataStoreName);
+			const getRequest = store.get(comicId);
+			getRequest.onsuccess = () => {
+				const record = getRequest.result as ComicBook | undefined;
+				if (record) {
+					// Add filter to metadata object
+					(record as any).filter = filter;
+					const putRequest = store.put(record);
+					putRequest.onsuccess = () => resolve();
+					putRequest.onerror = () => reject(new Error('Failed to save filter setting'));
+				} else {
+					resolve(); // Not found
+				}
+			};
+			getRequest.onerror = () => reject(new Error('Failed to get metadata for filter update'));
+		});
+	}
+
+	async loadAllFilterSettings(): Promise<Record<string, string>> {
+		const db = await this.ensureDB();
+		return new Promise((resolve, reject) => {
+			const transaction = db.transaction(this.metadataStoreName, 'readonly');
+			const store = transaction.objectStore(this.metadataStoreName);
+			const request = store.getAll();
+			request.onsuccess = () => {
+				const records = request.result as ComicBook[];
+				const settings: Record<string, string> = {};
+				for (const record of records) {
+					if ((record as any).filter) {
+						settings[record.id] = (record as any).filter;
+					}
+				}
+				resolve(settings);
+			};
+			request.onerror = () => reject(new Error('Failed to load filter settings'));
+		});
+	}
+
 	async saveComicMetadata(comic: ComicBook): Promise<void> {
 		const db = await this.ensureDB();
 		return new Promise((resolve, reject) => {
