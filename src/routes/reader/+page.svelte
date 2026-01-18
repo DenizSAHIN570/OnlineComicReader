@@ -3,11 +3,12 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { get } from 'svelte/store';
-	import { currentComic, currentPageIndex, isLoading, error, currentFile } from '$lib/store/session.js';
+	import { currentComic, currentPageIndex, isLoading, error, currentFile, setError } from '$lib/store/session.js';
 	import ArchiveManager from '$lib/archive/archiveManager.js';
 	import Viewer from '$lib/ui/Viewer.svelte';
 	import type { ComicBook } from '../../types/comic.js';
 	import { comicStorage } from '$lib/storage/comicStorage.js';
+	import { logger } from '$lib/services/logger';
 
 	let archiveManager: ArchiveManager;
 	let comic: ComicBook | null = null;
@@ -30,7 +31,7 @@
 				await comicStorage.saveComicMetadata(structuredCloneComic(comic));
 				await comicStorage.updateProgress(comic.id, pageIndex, comic.totalPages);
 			} catch (saveError) {
-				console.error('Failed to save reading position:', saveError);
+				logger.error('Reader', 'Failed to save reading position', saveError);
 			}
 		}
 	});
@@ -57,9 +58,9 @@
 				currentComic.set(comic);
 
 				archiveReady = true;
-				console.log(`Loaded ${pages.length} pages from ${await archiveManager.getFileType(file)} archive`);
-			} catch (error) {
-				console.error('Failed to load archive:', error);
+				logger.info('Reader', `Loaded ${pages.length} pages from ${await archiveManager.getFileType(file)} archive`);
+			} catch (e) {
+				logger.error('Reader', 'Failed to load archive', e);
 				requestFileReload();
 			}
 		} else if (comic && !file) {
@@ -87,7 +88,7 @@ async function saveProgress(): Promise<void> {
 		await comicStorage.saveComicMetadata(structuredCloneComic(comic));
 		await comicStorage.updateProgress(comic.id, pageIndex, totalPages);
 	} catch (error) {
-		console.error('Failed to persist reading progress:', error);
+		logger.error('Reader', 'Failed to persist reading progress', error);
 	}
 }
 
@@ -115,7 +116,7 @@ function structuredCloneComic(comic: ComicBook): ComicBook {
 				return cachedBlob;
 			}
 		} catch (error) {
-			console.warn('Failed to get cached page:', error);
+			logger.warn('Reader', 'Failed to get cached page', error);
 		}
 		
 		// Get the page from comic pages array
@@ -137,7 +138,7 @@ function structuredCloneComic(comic: ComicBook): ComicBook {
 		try {
 			await comicStorage.savePageBlob(comic.id, index, page.blob);
 		} catch (error) {
-			console.warn('Failed to cache page:', error);
+			logger.warn('Reader', 'Failed to cache page', error);
 		}
 		
 		return page.blob;
@@ -164,7 +165,8 @@ function structuredCloneComic(comic: ComicBook): ComicBook {
 						dialog.style.display = 'none';
 					}
 				} catch (error) {
-					console.error('Failed to reload archive:', error);
+					logger.error('Reader', 'Failed to reload archive', error);
+					setError('Failed to reload archive', 'error');
 				}
 			} else {
 				alert('This doesn\'t appear to be the same file. Please select the correct file.');
@@ -192,14 +194,14 @@ function structuredCloneComic(comic: ComicBook): ComicBook {
 </script>
 
 <svelte:head>
-	<title>{comic?.title || 'Reading'} - Online Comic Reader</title>
+	<title>{comic?.title || 'Reading'} - ComiKaiju</title>
 </svelte:head>
 
 {#if $error}
 	<div class="error-overlay">
 		<div class="error-content">
 			<h2>Error</h2>
-			<p>{$error}</p>
+			<p>{$error.message}</p>
 			<button on:click={exitReader}>Go Home</button>
 		</div>
 	</div>
@@ -289,7 +291,7 @@ function structuredCloneComic(comic: ComicBook): ComicBook {
 		width: 40px;
 		height: 40px;
 		border: 4px solid #444;
-		border-top: 4px solid #fff;
+		border-top: 4px solid var(--color-primary);
 		border-radius: 50%;
 		animation: spin 1s linear infinite;
 		margin: 0 auto 1rem;
@@ -312,7 +314,7 @@ function structuredCloneComic(comic: ComicBook): ComicBook {
 	}
 	
 	.file-select-button {
-		background: #4CAF50;
+		background: var(--color-primary);
 		color: white;
 		padding: 0.75rem 1.5rem;
 		border: none;
@@ -324,7 +326,7 @@ function structuredCloneComic(comic: ComicBook): ComicBook {
 	}
 	
 	.file-select-button:hover {
-		background: #45a049;
+		background: var(--color-primary-hover);
 	}
 	
 	.cancel-button {
@@ -352,7 +354,7 @@ function structuredCloneComic(comic: ComicBook): ComicBook {
 	}
 	
 	button {
-		background: #4CAF50;
+		background: var(--color-primary);
 		color: white;
 		padding: 0.75rem 1.5rem;
 		border: none;
@@ -362,6 +364,6 @@ function structuredCloneComic(comic: ComicBook): ComicBook {
 	}
 	
 	button:hover {
-		background: #45a049;
+		background: var(--color-primary-hover);
 	}
 </style>

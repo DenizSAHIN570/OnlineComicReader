@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import type { ComicBook, ComicPage } from '../../types/comic.js';
+import type { ComicBook } from '../../types/comic.js';
 
 // Current comic book being viewed
 export const currentComic = writable<ComicBook | null>(null);
@@ -14,15 +14,22 @@ export const currentPageIndex = writable<number>(0);
 export const isLoading = writable<boolean>(false);
 export const loadingMessage = writable<string>('');
 
-// Error state
-export const error = writable<string | null>(null);
-
 // View settings
 export const viewSettings = writable({
 	fitMode: 'fit-width' as 'fit-width' | 'fit-height' | 'original',
 	singlePageMode: true,
 	showThumbnails: false
 });
+
+// Error state
+export interface AppError {
+	message: string;
+	code?: string;
+	severity: 'info' | 'warning' | 'error' | 'critical';
+	timestamp: number;
+}
+
+export const error = writable<AppError | null>(null);
 
 // Helper functions
 export function setComic(comic: ComicBook, file?: File) {
@@ -48,8 +55,13 @@ export function setLoading(loading: boolean, message = '') {
 	loadingMessage.set(message);
 }
 
-export function setError(errorMessage: string | null) {
-	error.set(errorMessage);
+export function setError(errorMessage: string, severity: AppError['severity'] = 'error', code?: string) {
+	error.set({
+		message: errorMessage,
+		severity,
+		code,
+		timestamp: Date.now()
+	});
 }
 
 export function clearError() {

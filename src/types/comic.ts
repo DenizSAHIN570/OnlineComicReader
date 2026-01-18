@@ -7,22 +7,6 @@ export interface ComicPage {
 	entry?: any; // Archive entry from archive library
 }
 
-export interface ComicMetadata {
-	fileName: string;
-	totalPages: number;
-	archiveType: 'zip' | 'rar';
-	fileSize: number;
-}
-
-export interface ComicSession {
-	id: string;
-	metadata: ComicMetadata;
-	pages: ComicPage[];
-	currentPageIndex: number;
-	lastReadAt: Date;
-	archiveType: 'zip' | 'rar'; // For backward compatibility
-}
-
 export interface ComicBook {
 	id: string;
 	title: string;
@@ -41,6 +25,24 @@ export interface ArchiveEntry {
 	compressed_size?: number;
 	is_file: boolean;
 	isDirectory?: boolean; // For backward compatibility
+}
+
+export interface FileSystemItem {
+	id: string;
+	name: string;
+	type: 'file';
+	contentHash: string;
+	size: number;
+	mimeType: string;
+	thumbnail?: string;
+	createdAt: number;
+	updatedAt: number;
+}
+
+export interface BlobRecord {
+	hash: string;
+	data: ArrayBuffer;
+	refCount: number;
 }
 
 // Worker message types

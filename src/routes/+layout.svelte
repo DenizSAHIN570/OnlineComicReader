@@ -1,19 +1,35 @@
 <script lang="ts">
 	import '../app.css';
 	import { onMount } from 'svelte';
-	import { error, clearError } from '$lib/store/session.js';
-	import { filterStore } from '$lib/store/filterStore';
+	import { error, clearError, isLoading, loadingMessage, setError } from '$lib/store/session.js';
+	import { themeStore } from '$lib/services/theme';
+	import { logger } from '$lib/services/logger';
 	
-	// Track mouse usage for focus styles
 	onMount(() => {
-		filterStore.init();
-		let isMouseUser = false;
+		// Initialize services
+		themeStore.init();
 		
+		// Global Error Handlers
+		window.onerror = (msg, url, lineNo, columnNo, err) => {
+			const errorMessage = typeof msg === 'string' ? msg : 'An unexpected error occurred';
+			logger.error('Global', errorMessage, { url, lineNo, columnNo, err });
+			setError(errorMessage, 'critical');
+			return false;
+		};
+
+		window.onunhandledrejection = (event) => {
+			const reason = event.reason;
+			const msg = reason instanceof Error ? reason.message : String(reason);
+			logger.error('Global', `Unhandled Rejection: ${msg}`, reason);
+			setError(`Unhandled Error: ${msg}`, 'error');
+		};
+
+		// Track mouse usage for accessibility
+		let isMouseUser = false;
 		function handleMouseDown() {
 			isMouseUser = true;
 			document.body.classList.add('mouse-user');
 		}
-		
 		function handleKeyDown(event: KeyboardEvent) {
 			if (event.key === 'Tab') {
 				isMouseUser = false;
@@ -27,13 +43,13 @@
 		return () => {
 			document.removeEventListener('mousedown', handleMouseDown);
 			document.removeEventListener('keydown', handleKeyDown);
+			window.onerror = null;
+			window.onunhandledrejection = null;
 		};
 	});
 	
-	// Global error handler
-	$: if ($error) {
-		console.error('Global error:', $error);
-		// Auto-clear errors after 10 seconds
+	// Auto-clear non-critical errors
+	$: if ($error && $error.severity !== 'critical') {
 		setTimeout(() => {
 			clearError();
 		}, 10000);
@@ -44,14 +60,31 @@
 	<slot />
 </main>
 
+{#if $isLoading}
+	<div class="loading-overlay" role="status" aria-label="Loading">
+		<div class="loading-content bg-bg-surface text-text-main">
+			<div class="loading-spinner border-border border-t-primary"></div>
+			<p>{$loadingMessage || 'Loading...'}</p>
+		</div>
+	</div>
+{/if}
+
 {#if $error}
-	<div class="global-error" role="alert">
+	<div class="global-error {$error.severity}" role="alert">
 		<div class="error-content">
-			<span class="error-icon">⚠️</span>
-			<span class="error-message">{$error}</span>
-			<button class="error-dismiss" on:click={clearError} aria-label="Dismiss error">
-				✕
-			</button>
+			<span class="error-icon">
+				{#if $error.severity === 'critical'}🛑
+				{:else if $error.severity === 'warning'}⚠️
+				{:else if $error.severity === 'info'}ℹ️
+				{:else}❌{/if}
+			</span>
+			<div class="error-details">
+				<span class="error-message">{$error.message}</span>
+				{#if $error.code}
+					<span class="error-code">Code: {$error.code}</span>
+				{/if}
+			</div>
+			<button class="error-dismiss" on:click={clearError} aria-label="Dismiss">✕</button>
 		</div>
 	</div>
 {/if}
@@ -59,6 +92,47 @@
 <style>
 	main {
 		min-height: 100vh;
+		background-color: var(--color-bg-main);
+		color: var(--color-text-main);
+	}
+
+	.loading-overlay {
+		position: fixed;
+		top: 0;
+		left: 0;
+		width: 100vw;
+		height: 100vh;
+		background: rgba(0, 0, 0, 0.7);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 9999;
+		backdrop-filter: blur(2px);
+	}
+
+	.loading-content {
+		text-align: center;
+		padding: 2rem;
+		border-radius: 12px;
+		box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+		min-width: 200px;
+		background-color: var(--color-bg-surface);
+		color: var(--color-text-main);
+	}
+
+	.loading-spinner {
+		width: 40px;
+		height: 40px;
+		border: 4px solid var(--color-border);
+		border-top: 4px solid var(--color-primary);
+		border-radius: 50%;
+		animation: spin 1s linear infinite;
+		margin: 0 auto 1rem;
+	}
+
+	@keyframes spin {
+		0% { transform: rotate(0deg); }
+		100% { transform: rotate(360deg); }
 	}
 	
 	.global-error {
@@ -66,67 +140,53 @@
 		top: 1rem;
 		right: 1rem;
 		z-index: 10000;
+		width: 90%;
 		max-width: 400px;
-		background: #f44336;
-		color: white;
-		border-radius: 4px;
+		border-radius: 6px;
 		box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
 		animation: slideIn 0.3s ease-out;
+		overflow: hidden;
 	}
+
+	.global-error.critical { background: #991b1b; color: white; }
+	.global-error.error { background: var(--color-status-error); color: white; }
+	.global-error.warning { background: var(--color-status-warning); color: black; }
+	.global-error.info { background: var(--color-primary); color: white; }
 	
 	@keyframes slideIn {
-		from {
-			transform: translateX(100%);
-			opacity: 0;
-		}
-		to {
-			transform: translateX(0);
-			opacity: 1;
-		}
+		from { transform: translateX(100%); opacity: 0; }
+		to { transform: translateX(0); opacity: 1; }
 	}
 	
 	.error-content {
 		display: flex;
-		align-items: center;
+		align-items: flex-start;
 		padding: 1rem;
-		gap: 0.5rem;
+		gap: 0.75rem;
 	}
 	
-	.error-icon {
-		flex-shrink: 0;
-	}
-	
-	.error-message {
+	.error-details {
 		flex: 1;
-		font-size: 0.9rem;
-		line-height: 1.4;
-		white-space: pre-line;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.error-code {
+		font-size: 0.75rem;
+		opacity: 0.8;
+		margin-top: 0.25rem;
 	}
 	
 	.error-dismiss {
 		background: none;
 		border: none;
-		color: white;
-		font-size: 1.2rem;
+		color: currentColor;
+		font-size: 1.25rem;
 		cursor: pointer;
-		padding: 0.25rem;
+		padding: 0;
 		line-height: 1;
-		opacity: 0.8;
-		flex-shrink: 0;
+		opacity: 0.7;
 	}
 	
-	.error-dismiss:hover {
-		opacity: 1;
-		background: rgba(255, 255, 255, 0.1);
-		border-radius: 2px;
-	}
-	
-	@media (max-width: 480px) {
-		.global-error {
-			top: 0.5rem;
-			right: 0.5rem;
-			left: 0.5rem;
-			max-width: none;
-		}
-	}
+	.error-dismiss:hover { opacity: 1; }
 </style>

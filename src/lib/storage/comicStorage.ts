@@ -1,252 +1,341 @@
-// IndexedDB Storage Manager for Comic Files
-// Persists comic archives locally for offline access with schema migration support
+// IndexedDB Storage Manager for Comic Files & Metadata
+// Unified storage for file blobs, metadata, and reading progress
 
-import type { ComicBook } from '../../types/comic.js';
-
-export interface StoredComic extends ComicBook {
-	fileBuffer: ArrayBuffer;
-	mimeType: string;
-	uploadDate: number;
-	lastAccessed: number;
-	fileSize: number;
-	thumbnail?: string;
-	currentPage: number;
-	totalPages: number;
-	filter?: string;
-}
-
-export interface ComicMetadata {
-	id: string;
-	filename: string;
-	uploadDate: number;
-	lastAccessed: number;
-	fileSize: number;
-	thumbnail?: string;
-	currentPage: number;
-	totalPages: number;
-	filter?: string;
-}
-
-type ComicRecord = {
-	id: string;
-	filename: string;
-	fileBuffer?: ArrayBuffer; // current storage format
-	fileData?: Blob; // legacy storage format
-	mimeType?: string;
-	uploadDate?: number;
-	lastAccessed?: number;
-	fileSize?: number;
-	thumbnail?: string;
-	version?: number;
-	currentPage?: number;
-	totalPages?: number;
-	filter?: string;
-};
+import type { ComicBook, FileSystemItem, BlobRecord } from '../../types/comic.js';
+import { calculateHash } from '../utils/hash.js';
+import { logger } from '../services/logger.js';
 
 class ComicStorageManager {
 	private dbName = 'ComicReaderFilesDB';
-	private dbVersion = 3;
-	private storeName = 'comicFiles';
+	private dbVersion = 5; // Incremented for contentHash index
+	
+	// Stores
+	private storeName = 'comicFiles'; // Legacy
+	private itemsStoreName = 'items';
+	private blobsStoreName = 'blobs';
 	private pagesStoreName = 'comicPages';
 	private metadataStoreName = 'comicMetadata';
-	private recordVersion = 2;
+
 	private db: IDBDatabase | null = null;
+	private initPromise: Promise<void> | null = null;
 
 	async init(): Promise<void> {
 		if (this.db) return;
+		if (this.initPromise) return this.initPromise;
 
-		this.db = await new Promise<IDBDatabase>((resolve, reject) => {
-			const request = indexedDB.open(this.dbName, this.dbVersion);
+		this.initPromise = (async () => {
+			this.db = await new Promise<IDBDatabase>((resolve, reject) => {
+				const request = indexedDB.open(this.dbName, this.dbVersion);
 
-			request.onerror = () => reject(new Error('Failed to open database'));
+				request.onerror = () => reject(new Error('Failed to open database'));
 
-			request.onsuccess = () => resolve(request.result);
+				request.onsuccess = () => resolve(request.result);
 
-			request.onupgradeneeded = (event) => {
-				const db = (event.target as IDBOpenDBRequest).result;
-				if (!db.objectStoreNames.contains(this.storeName)) {
-					const objectStore = db.createObjectStore(this.storeName, { keyPath: 'id' });
-					objectStore.createIndex('filename', 'filename', { unique: false });
-					objectStore.createIndex('uploadDate', 'uploadDate', { unique: false });
-					objectStore.createIndex('lastAccessed', 'lastAccessed', { unique: false });
-				}
-				if (!db.objectStoreNames.contains(this.pagesStoreName)) {
-					const pagesStore = db.createObjectStore(this.pagesStoreName, { keyPath: 'key' });
-					pagesStore.createIndex('comicId', 'comicId', { unique: false });
-				}
-				if (!db.objectStoreNames.contains(this.metadataStoreName)) {
-					const metadataStore = db.createObjectStore(this.metadataStoreName, { keyPath: 'id' });
-					metadataStore.createIndex('lastRead', 'lastRead', { unique: false });
-				}
-			};
-		});
+				request.onupgradeneeded = (event) => {
+					const db = (event.target as IDBOpenDBRequest).result;
+					const tx = (event.target as IDBOpenDBRequest).transaction!;
 
-		// Run migration to normalize existing records after initialization
-		await this.migrateLegacyRecords();
-		await this.migrateFromSharedLegacyStore();
+					// Legacy store (keep for now or migrate if needed)
+					if (!db.objectStoreNames.contains(this.storeName)) {
+						db.createObjectStore(this.storeName, { keyPath: 'id' });
+					}
+
+					// Metadata & Cache
+					if (!db.objectStoreNames.contains(this.metadataStoreName)) {
+						const metadataStore = db.createObjectStore(this.metadataStoreName, { keyPath: 'id' });
+						metadataStore.createIndex('lastRead', 'lastRead', { unique: false });
+					}
+					if (!db.objectStoreNames.contains(this.pagesStoreName)) {
+						const pagesStore = db.createObjectStore(this.pagesStoreName, { keyPath: 'key' });
+						pagesStore.createIndex('comicId', 'comicId', { unique: false });
+					}
+
+					// File System Stores (Merged from fileSystem.ts)
+					if (!db.objectStoreNames.contains(this.itemsStoreName)) {
+						const itemStore = db.createObjectStore(this.itemsStoreName, { keyPath: 'id' });
+						itemStore.createIndex('updatedAt', 'updatedAt', { unique: false });
+						itemStore.createIndex('contentHash', 'contentHash', { unique: false });
+					} else {
+						// Ensure indexes exist if store existed
+						const itemStore = tx.objectStore(this.itemsStoreName);
+						if (!itemStore.indexNames.contains('updatedAt')) {
+							itemStore.createIndex('updatedAt', 'updatedAt', { unique: false });
+						}
+						if (!itemStore.indexNames.contains('contentHash')) {
+							itemStore.createIndex('contentHash', 'contentHash', { unique: false });
+						}
+					}
+
+					if (!db.objectStoreNames.contains(this.blobsStoreName)) {
+						db.createObjectStore(this.blobsStoreName, { keyPath: 'hash' });
+					}
+				};
+			});
+		})();
+
+		return this.initPromise;
 	}
 
 	private async ensureDB(): Promise<IDBDatabase> {
-		if (!this.db) {
-			await this.init();
-		}
+		if (!this.db) await this.init();
 		if (!this.db) throw new Error('Database not initialized');
 		return this.db;
 	}
 
-	async saveComic(
-		file: File,
-		options?: { thumbnail?: string; currentPage?: number; totalPages?: number }
-	): Promise<string> {
+	// --- File System Operations ---
+
+	async findDuplicate(file: File): Promise<FileSystemItem | undefined> {
 		const db = await this.ensureDB();
-		const id = this.generateId(file.name, file.size);
-		const { thumbnail, currentPage = 0, totalPages } = options || {};
+		const hash = await calculateHash(file);
 
-		// Check if comic already exists
-		const existing = await this.getComic(id);
-		if (existing) {
-			await this.updateLastAccessed(id);
-			console.log(`Comic already exists: ${file.name}`);
-			return id;
-		}
+		return new Promise<FileSystemItem | undefined>((resolve, reject) => {
+			const tx = db.transaction(this.itemsStoreName, 'readonly');
+			const store = tx.objectStore(this.itemsStoreName);
+			
+			if (store.indexNames.contains('contentHash')) {
+				const index = store.index('contentHash');
+				const req = index.get(hash);
+				req.onsuccess = () => resolve(req.result);
+				req.onerror = () => resolve(undefined);
+			} else {
+				resolve(undefined);
+			}
+		});
+	}
 
-		const mimeType = file.type || 'application/octet-stream';
+	async saveFile(file: File, options?: { thumbnail?: string }): Promise<FileSystemItem> {
+		const db = await this.ensureDB();
+		const hash = await calculateHash(file);
+
+        // 0. Check for existing file (Deduplication via Index)
+        const existingItem = await new Promise<FileSystemItem | undefined>((resolve) => {
+            const tx = db.transaction(this.itemsStoreName, 'readonly');
+            const store = tx.objectStore(this.itemsStoreName);
+            // We need to check if the index exists, assuming init() ran it should.
+            if (store.indexNames.contains('contentHash')) {
+                const index = store.index('contentHash');
+                const req = index.get(hash);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => resolve(undefined);
+            } else {
+                // Fallback scan if migration failed for some reason (unlikely)
+                resolve(undefined);
+            }
+        });
+
+        if (existingItem) {
+            logger.info('ComicStorage', `Duplicate file detected, returning existing: ${existingItem.name}`);
+            return existingItem;
+        }
+
 		const buffer = await file.arrayBuffer();
 
-		const record: ComicRecord = {
-			id,
-			filename: file.name,
-			fileBuffer: buffer,
-			mimeType,
-			uploadDate: Date.now(),
-			lastAccessed: Date.now(),
-			fileSize: file.size,
-			thumbnail,
-			currentPage,
-			totalPages: typeof totalPages === 'number' ? totalPages : 0,
-			version: this.recordVersion
+		// 1. Check/Save Blob (Deduplication)
+		await new Promise<void>((resolve, reject) => {
+			const tx = db.transaction(this.blobsStoreName, 'readwrite');
+			const store = tx.objectStore(this.blobsStoreName);
+			const getReq = store.get(hash);
+
+			getReq.onsuccess = () => {
+				const record = getReq.result as BlobRecord;
+				if (record) {
+					record.refCount++;
+					store.put(record);
+				} else {
+					store.add({
+						hash,
+						data: buffer,
+						refCount: 1
+					} as BlobRecord);
+				}
+			};
+			
+			tx.oncomplete = () => resolve();
+			tx.onerror = () => reject(new Error('Failed to save blob'));
+		});
+
+		// 2. Create File Entry
+		const item: FileSystemItem = {
+			id: crypto.randomUUID(),
+			name: file.name,
+			type: 'file',
+			contentHash: hash,
+			size: file.size,
+			mimeType: file.type,
+			thumbnail: options?.thumbnail,
+			createdAt: Date.now(),
+			updatedAt: Date.now()
 		};
 
 		return new Promise((resolve, reject) => {
-			const transaction = db.transaction(this.storeName, 'readwrite');
-			const objectStore = transaction.objectStore(this.storeName);
-			const request = objectStore.put(record);
+			const tx = db.transaction(this.itemsStoreName, 'readwrite');
+			const store = tx.objectStore(this.itemsStoreName);
+			const request = store.add(item);
 
-			request.onsuccess = () => {
-				console.log(`Comic saved: ${file.name} (${this.formatFileSize(file.size)})`);
-				resolve(id);
-			};
-			request.onerror = () => reject(new Error('Failed to save comic'));
+			request.onsuccess = () => resolve(item);
+			request.onerror = () => reject(new Error('Failed to save file item'));
 		});
 	}
 
-	async getComic(id: string): Promise<ComicBook | null> {
-		const db = await this.ensureDB();
-
-		const record = await new Promise<ComicRecord | undefined>((resolve, reject) => {
-			const transaction = db.transaction(this.storeName, 'readonly');
-			const objectStore = transaction.objectStore(this.storeName);
-			const request = objectStore.get(id);
-
-			request.onsuccess = () => {
-				resolve(request.result as ComicRecord | undefined);
-			};
-			request.onerror = () => reject(new Error('Failed to retrieve comic'));
-		});
-
-		return this.normalizeRecord(record);
-	}
-
-	async getAllComics(): Promise<ComicMetadata[]> {
-		const db = await this.ensureDB();
-
-		const records = await new Promise<ComicRecord[]>((resolve, reject) => {
-			const transaction = db.transaction(this.storeName, 'readonly');
-			const objectStore = transaction.objectStore(this.storeName);
-			const request = objectStore.getAll();
-
-			request.onsuccess = () => resolve((request.result as ComicRecord[]) || []);
-			request.onerror = () => reject(new Error('Failed to retrieve comics list'));
-		});
-
-		const normalized = await Promise.all(records.map((record) => this.normalizeRecord(record)));
-		return normalized
-			.filter((comic): comic is StoredComic => comic !== null)
-			.map((comic) => ({
-				id: comic.id,
-				filename: comic.filename,
-				uploadDate: comic.uploadDate,
-				lastAccessed: comic.lastAccessed,
-				fileSize: comic.fileSize,
-				thumbnail: comic.thumbnail,
-				currentPage: comic.currentPage,
-				totalPages: comic.totalPages,
-				filter: comic.filter
-			}))
-			.sort((a, b) => b.lastAccessed - a.lastAccessed);
-	}
-
-	async saveFilterSetting(comicId: string, filter: string): Promise<void> {
+	async getAllFiles(): Promise<FileSystemItem[]> {
 		const db = await this.ensureDB();
 		return new Promise((resolve, reject) => {
-			const transaction = db.transaction(this.storeName, 'readwrite');
-			const objectStore = transaction.objectStore(this.storeName);
-			const getRequest = objectStore.get(comicId);
-			getRequest.onsuccess = () => {
-				const record = getRequest.result as ComicRecord | undefined;
-				if (record) {
-					record.filter = filter;
-					const putRequest = objectStore.put(record);
-					putRequest.onsuccess = () => resolve();
-					putRequest.onerror = () => reject(new Error('Failed to save filter setting'));
-				} else {
-					resolve(); // Not found
-				}
+			const tx = db.transaction(this.itemsStoreName, 'readonly');
+			const store = tx.objectStore(this.itemsStoreName);
+			const request = store.getAll();
+
+			request.onsuccess = () => {
+				let items = request.result as FileSystemItem[];
+				// Filter logic if needed, currently we assume items store only has files after revert
+                items = items.filter(i => i.type === 'file' || !i.type);
+				items.sort((a, b) => b.updatedAt - a.updatedAt);
+				resolve(items);
 			};
-			getRequest.onerror = () => reject(new Error('Failed to get comic for filter update'));
+			request.onerror = () => reject(new Error('Failed to list files'));
 		});
 	}
 
-	async loadAllFilterSettings(): Promise<Record<string, string>> {
-		const comics = await this.getAllComics();
-		const settings: Record<string, string> = {};
-		for (const comic of comics) {
-			if (comic.filter) {
-				settings[comic.id] = comic.filter;
-			}
-		}
-		return settings;
+    async getRecentFiles(limit = 12): Promise<FileSystemItem[]> {
+		const db = await this.ensureDB();
+		return new Promise((resolve, reject) => {
+			const tx = db.transaction(this.itemsStoreName, 'readonly');
+			const store = tx.objectStore(this.itemsStoreName);
+			const index = store.index('updatedAt');
+			const request = index.openCursor(null, 'prev');
+			const results: FileSystemItem[] = [];
+
+			request.onsuccess = (event) => {
+				const cursor = (event.target as IDBRequest<IDBCursorWithValue>).result;
+				if (cursor && results.length < limit) {
+					const item = cursor.value;
+					if (item.type === 'file' || !item.type) {
+						results.push(item as FileSystemItem);
+					}
+					cursor.continue();
+				} else {
+					resolve(results);
+				}
+			};
+			request.onerror = () => reject(new Error('Failed to fetch recent files'));
+		});
+	}
+
+	async getFile(id: string): Promise<File | null> {
+		const db = await this.ensureDB();
+		
+		const item = await this.getItem(id);
+		if (!item || !item.contentHash) return null;
+
+		const blobRecord = await new Promise<BlobRecord>((resolve, reject) => {
+			const tx = db.transaction(this.blobsStoreName, 'readonly');
+			const store = tx.objectStore(this.blobsStoreName);
+			const req = store.get(item.contentHash!);
+			req.onsuccess = () => resolve(req.result);
+			req.onerror = () => reject(new Error('Failed to get blob'));
+		});
+
+		if (!blobRecord) return null;
+
+		return new File([blobRecord.data], item.name, {
+			type: item.mimeType || 'application/octet-stream',
+			lastModified: item.updatedAt
+		});
+	}
+
+	async getItem(id: string): Promise<FileSystemItem | null> {
+		const db = await this.ensureDB();
+		return new Promise((resolve, reject) => {
+			const tx = db.transaction(this.itemsStoreName, 'readonly');
+			const store = tx.objectStore(this.itemsStoreName);
+			const req = store.get(id);
+			req.onsuccess = () => resolve(req.result || null);
+			req.onerror = () => reject(new Error('Failed to get item'));
+		});
 	}
 
 	async deleteComic(id: string): Promise<void> {
 		const db = await this.ensureDB();
-
+		
+		// 1. Get Item to find Hash
+		const item = await this.getItem(id);
+		
+		// 2. Transaction across all stores
 		return new Promise((resolve, reject) => {
-			const transaction = db.transaction(this.storeName, 'readwrite');
-			const objectStore = transaction.objectStore(this.storeName);
-			const request = objectStore.delete(id);
+			const stores = [this.itemsStoreName, this.metadataStoreName, this.pagesStoreName];
+			// Only include blobs if we have a hash to check
+			if (item?.contentHash) {
+				stores.push(this.blobsStoreName);
+			}
+			
+			const tx = db.transaction(stores, 'readwrite');
 
-			request.onsuccess = () => {
-				console.log(`Comic deleted: ${id}`);
+			// Delete Item & Metadata
+			tx.objectStore(this.itemsStoreName).delete(id);
+			tx.objectStore(this.metadataStoreName).delete(id);
+            // We should also delete cached pages for this comic
+            // Index deletion is harder, usually we just let them stale or need a cursor
+            // For now, let's leave pages or clear them if we can efficiently. 
+            // Clearing pages by index requires opening a cursor on the index.
+            const pagesIndex = tx.objectStore(this.pagesStoreName).index('comicId');
+            const pagesReq = pagesIndex.openKeyCursor(IDBKeyRange.only(id));
+            pagesReq.onsuccess = () => {
+                const cursor = pagesReq.result;
+                if (cursor) {
+                    tx.objectStore(this.pagesStoreName).delete(cursor.primaryKey);
+                    cursor.continue();
+                }
+            };
+
+			// Handle Blob Reference Counting
+			if (item?.contentHash) {
+				const blobStore = tx.objectStore(this.blobsStoreName);
+				const getBlob = blobStore.get(item.contentHash);
+				getBlob.onsuccess = () => {
+					const blobRecord = getBlob.result as BlobRecord;
+					if (blobRecord) {
+						blobRecord.refCount--;
+						if (blobRecord.refCount <= 0) {
+							blobStore.delete(item.contentHash!);
+						} else {
+							blobStore.put(blobRecord);
+						}
+					}
+				};
+			}
+
+			tx.oncomplete = () => {
+				logger.info('ComicStorage', `Comic deleted: ${id}`);
 				resolve();
 			};
-			request.onerror = () => reject(new Error('Failed to delete comic'));
+			tx.onerror = () => reject(new Error('Failed to delete comic'));
 		});
 	}
 
-	async clearAll(): Promise<void> {
+	// --- Metadata & Cache Operations ---
+
+	async saveComicMetadata(comic: ComicBook): Promise<void> {
 		const db = await this.ensureDB();
-
 		return new Promise((resolve, reject) => {
-			const transaction = db.transaction(this.storeName, 'readwrite');
-			const objectStore = transaction.objectStore(this.storeName);
-			const request = objectStore.clear();
+			const transaction = db.transaction(this.metadataStoreName, 'readwrite');
+			const store = transaction.objectStore(this.metadataStoreName);
+			// Simple deep clone to ensure no proxies
+			const cleanComic = JSON.parse(JSON.stringify(comic));
+			const request = store.put(cleanComic);
 
-			request.onsuccess = () => {
-				console.log('All comics cleared from storage');
-				resolve();
-			};
-			request.onerror = () => reject(new Error('Failed to clear storage'));
+			request.onerror = () => reject(request.error);
+			request.onsuccess = () => resolve();
+		});
+	}
+
+	async getComicMetadata(id: string): Promise<ComicBook | null> {
+		const db = await this.ensureDB();
+		return new Promise((resolve, reject) => {
+			const transaction = db.transaction(this.metadataStoreName, 'readonly');
+			const store = transaction.objectStore(this.metadataStoreName);
+			const request = store.get(id);
+
+			request.onsuccess = () => resolve((request.result as ComicBook) || null);
+			request.onerror = () => reject(new Error('Failed to retrieve comic metadata'));
 		});
 	}
 
@@ -257,42 +346,33 @@ class ComicStorageManager {
 		const db = await this.ensureDB();
 
 		return new Promise((resolve, reject) => {
-			const transaction = db.transaction(this.storeName, 'readwrite');
-			const objectStore = transaction.objectStore(this.storeName);
-			const getRequest = objectStore.get(id);
+			const transaction = db.transaction(this.metadataStoreName, 'readwrite');
+			const store = transaction.objectStore(this.metadataStoreName);
+			const getRequest = store.get(id);
 
 			getRequest.onsuccess = () => {
-				const record = getRequest.result as ComicRecord | undefined;
+				const record = getRequest.result as ComicBook | undefined;
 				if (record) {
-					record.lastAccessed = Date.now();
+					record.lastRead = new Date();
 					if (data && typeof data.currentPage === 'number') {
 						record.currentPage = data.currentPage;
 					}
 					if (data && typeof data.totalPages === 'number') {
 						record.totalPages = data.totalPages;
 					}
-					record.version = this.recordVersion;
-					const putRequest = objectStore.put(record);
+					const putRequest = store.put(record);
 					putRequest.onsuccess = () => resolve();
-					putRequest.onerror = () => reject(new Error('Failed to update last accessed'));
+					putRequest.onerror = () => reject(new Error('Failed to update metadata'));
 				} else {
-					resolve(); // Not found
+					resolve(); // If no metadata, nothing to update (it will be created on first open)
 				}
 			};
-			getRequest.onerror = () => reject(new Error('Failed to get comic'));
+			getRequest.onerror = () => reject(new Error('Failed to get comic metadata'));
 		});
 	}
 
 	async updateProgress(id: string, currentPage: number, totalPages?: number): Promise<void> {
 		await this.updateLastAccessed(id, { currentPage, totalPages });
-	}
-
-	createFile(storedComic: StoredComic): File {
-		const blob = new Blob([storedComic.fileBuffer], { type: storedComic.mimeType });
-		return new File([blob], storedComic.filename, {
-			type: storedComic.mimeType,
-			lastModified: storedComic.lastAccessed || storedComic.uploadDate || Date.now()
-		});
 	}
 
 	async savePageBlob(comicId: string, pageIndex: number, blob: Blob): Promise<void> {
@@ -341,225 +421,6 @@ class ComicStorageManager {
 		}
 		return { usage: 0, quota: 0, percentage: 0 };
 	}
-
-	private generateId(filename: string, fileSize: number): string {
-		return `${filename}-${fileSize}`;
-	}
-
-	private formatFileSize(bytes: number): string {
-		if (bytes === 0) return '0 Bytes';
-		const k = 1024;
-		const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-		const i = Math.floor(Math.log(bytes) / Math.log(k));
-		return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
-	}
-
-	private async normalizeRecord(record?: ComicRecord): Promise<StoredComic | null> {
-		if (!record) return null;
-
-		let updated = false;
-		let fileBuffer = record.fileBuffer;
-
-		// Handle legacy Blob storage
-		if (!fileBuffer && record.fileData instanceof Blob) {
-			try {
-				fileBuffer = await record.fileData.arrayBuffer();
-				record.fileBuffer = fileBuffer;
-				updated = true;
-			} catch (error) {
-				console.error('Failed to migrate legacy comic blob:', error);
-				return null;
-			}
-		}
-
-		if (!fileBuffer) {
-			console.warn(`Comic record missing file data: ${record.id}`);
-			return null;
-		}
-
-		const mimeType =
-			record.mimeType ||
-			(record.fileData instanceof Blob ? record.fileData.type : undefined) ||
-			'application/octet-stream';
-
-		const uploadDate = record.uploadDate ?? Date.now();
-		const lastAccessed = record.lastAccessed ?? uploadDate;
-		const fileSize =
-			record.fileSize ??
-			(record.fileData instanceof Blob ? record.fileData.size : fileBuffer.byteLength);
-		const currentPage = record.currentPage ?? 0;
-		const totalPages = record.totalPages ?? 0;
-
-		if (record.mimeType !== mimeType) {
-			record.mimeType = mimeType;
-			updated = true;
-		}
-		if (record.uploadDate !== uploadDate) {
-			record.uploadDate = uploadDate;
-			updated = true;
-		}
-		if (record.lastAccessed !== lastAccessed) {
-			record.lastAccessed = lastAccessed;
-			updated = true;
-		}
-		if (record.fileSize !== fileSize) {
-			record.fileSize = fileSize;
-			updated = true;
-		}
-		if (record.currentPage !== currentPage) {
-			record.currentPage = currentPage;
-			updated = true;
-		}
-		if (record.totalPages !== totalPages) {
-			record.totalPages = totalPages;
-			updated = true;
-		}
-		if (record.version !== this.recordVersion) {
-			record.version = this.recordVersion;
-			updated = true;
-		}
-
-		// Remove legacy blob to free space once migrated
-		if (updated && record.fileData) {
-			delete record.fileData;
-		}
-
-		if (updated) {
-			await this.persistRecord(record);
-		}
-
-		return {
-			id: record.id,
-			filename: record.filename,
-			fileBuffer,
-			mimeType,
-			uploadDate,
-			lastAccessed,
-			fileSize,
-			thumbnail: record.thumbnail,
-			currentPage,
-			totalPages,
-			filter: record.filter
-		};
-	}
-
-	private async persistRecord(record: ComicRecord): Promise<void> {
-		const db = await this.ensureDB();
-		await new Promise<void>((resolve, reject) => {
-			const transaction = db.transaction(this.storeName, 'readwrite');
-			const objectStore = transaction.objectStore(this.storeName);
-			const request = objectStore.put(record);
-
-			request.onsuccess = () => resolve();
-			request.onerror = () => reject(new Error('Failed to persist comic record'));
-		});
-	}
-
-	private async migrateLegacyRecords(): Promise<void> {
-		const database = await this.ensureDB();
-
-		await new Promise<void>((resolve, reject) => {
-			const transaction = database.transaction(this.storeName, 'readonly');
-			const store = transaction.objectStore(this.storeName);
-			const cursorRequest = store.openCursor();
-
-			cursorRequest.onerror = () => reject(new Error('Failed to iterate comic records'));
-
-			cursorRequest.onsuccess = async () => {
-				const cursor = cursorRequest.result;
-				if (!cursor) {
-					resolve();
-					return;
-				}
-
-				const record = cursor.value as ComicRecord;
-				const needsMigration =
-					!record.fileBuffer ||
-					!record.mimeType ||
-					!record.fileSize ||
-					record.version !== this.recordVersion;
-
-				if (!needsMigration) {
-					cursor.continue();
-					return;
-				}
-
-				try {
-					const normalized = await this.normalizeRecord(record);
-					if (normalized) {
-						// normalizeRecord already persisted changes if needed
-					}
-				} catch (error) {
-					console.error(`Failed to migrate comic record ${record.id}:`, error);
-				} finally {
-					cursor.continue();
-				}
-			};
-		});
-	}
-
-	async saveComicMetadata(comic: ComicBook): Promise<void> {
-		const db = await this.ensureDB();
-		return new Promise((resolve, reject) => {
-			const transaction = db.transaction(this.metadataStoreName, 'readwrite');
-			const store = transaction.objectStore(this.metadataStoreName);
-			const request = store.put(comic);
-
-			request.onerror = () => reject(request.error);
-			request.onsuccess = () => resolve();
-		});
-	}
-
-	private async migrateFromSharedLegacyStore(): Promise<void> {
-		return new Promise((resolve) => {
-			const request = indexedDB.open('ComicReaderDB');
-
-			request.onerror = () => resolve();
-
-			request.onsuccess = () => {
-				const legacyDb = request.result;
-
-				if (!legacyDb.objectStoreNames.contains('comics')) {
-					legacyDb.close();
-					resolve();
-					return;
-				}
-
-				const transaction = legacyDb.transaction('comics', 'readonly');
-				const store = transaction.objectStore('comics');
-				const cursorRequest = store.openCursor();
-
-				cursorRequest.onerror = () => {
-					legacyDb.close();
-					resolve();
-				};
-
-				cursorRequest.onsuccess = async () => {
-					const cursor = cursorRequest.result;
-					if (!cursor) {
-						legacyDb.close();
-						resolve();
-						return;
-					}
-
-					const record = cursor.value as ComicRecord;
-					const hasFileData =
-						record.fileBuffer instanceof ArrayBuffer || record.fileData instanceof Blob;
-
-					if (hasFileData) {
-						try {
-							await this.normalizeRecord(record);
-						} catch (error) {
-							console.error(`Failed to migrate legacy shared record ${record.id}:`, error);
-						}
-					}
-
-					cursor.continue();
-				};
-			};
-		});
-	}
 }
 
-// Export singleton instance
 export const comicStorage = new ComicStorageManager();

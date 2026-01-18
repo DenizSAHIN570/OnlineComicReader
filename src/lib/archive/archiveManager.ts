@@ -2,6 +2,7 @@
 // Supports ZIP (CBZ) and RAR (CBR) files using libarchive.js
 
 import type { ComicPage } from '../../types/comic.js';
+import { logger } from '../services/logger.js';
 
 class ArchiveManager {
 	private Archive: any = null;
@@ -25,7 +26,7 @@ class ArchiveManager {
 				});
 				
 				this.isInitialized = true;
-				console.log('ArchiveManager: libarchive.js initialized');
+				logger.info('ArchiveManager', 'libarchive.js initialized');
 			} catch (error: any) {
 				throw new Error(`Failed to initialize libarchive.js: ${error.message}`);
 			}
@@ -48,7 +49,7 @@ class ArchiveManager {
 
 				// Open the archive
 				const archive = await this.Archive.open(file);
-				console.log(`Opened archive: ${file.name}`);
+				logger.info('ArchiveManager', `Opened archive: ${file.name}`);
 
 				// Get file listing
 				const filesObj = await archive.getFilesObject();
@@ -83,7 +84,7 @@ class ArchiveManager {
 					a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
 				);
 
-				console.log(`Found ${sortedEntries.length} image files`);
+				logger.info('ArchiveManager', `Found ${sortedEntries.length} image files`);
 
 				// Convert entries to ComicPage format
 				const pages: ComicPage[] = sortedEntries.map((entry, index) => ({
@@ -94,7 +95,7 @@ class ArchiveManager {
 
 				resolve(pages);
 			} catch (error) {
-				console.error('Failed to open archive:', error);
+				logger.error('ArchiveManager', 'Failed to open archive', error);
 				reject(error);
 			}
 		});
@@ -117,7 +118,7 @@ class ArchiveManager {
 			page.blob = new Blob([extractedFile], { type: mimeType });
 			page.url = URL.createObjectURL(page.blob);
 		} catch (error) {
-			console.error(`Failed to extract ${page.filename}:`, error);
+			logger.error('ArchiveManager', `Failed to extract ${page.filename}`, error);
 			throw new Error(`Failed to extract page: ${error instanceof Error ? error.message : 'Unknown error'}`);
 		}
 	}
@@ -160,7 +161,7 @@ class ArchiveManager {
 	cleanup(): void {
 		// The uncompress library doesn't provide explicit cleanup
 		// But we can revoke any object URLs that were created
-		console.log('Archive manager cleanup completed');
+		logger.info('ArchiveManager', 'Cleanup completed');
 	}
 }
 

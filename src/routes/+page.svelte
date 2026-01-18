@@ -1,27 +1,55 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { comicStorage, type ComicMetadata, type StoredComic } from '$lib/storage/comicStorage.js';
-	import { setLoading } from '$lib/store/session.js';
-	import { handleFile, openExistingComic, cleanupComicProcessor } from '$lib/services/comicProcessor.js';
+	import { comicStorage } from '$lib/storage/comicStorage.js';
+	import { setLoading, setError, setComic } from '$lib/store/session.js';
+	import { handleFile, cleanupComicProcessor } from '$lib/services/comicProcessor.js';
+	import ThemeToggle from '$lib/ui/ThemeToggle.svelte';
+	import { logger } from '$lib/services/logger';
+    import ArchiveManager from '$lib/archive/archiveManager.js';
+    import { goto } from '$app/navigation';
+    import type { ComicBook, FileSystemItem } from '../types/comic';
 
-	let fileInput: HTMLInputElement;
-	let dragActive = false;
-	let recentComics: ComicMetadata[] = [];
-	let storageInfo = { usage: 0, quota: 0, percentage: 0 };
+	let fileInput = $state<HTMLInputElement>();
+	let dragActive = $state(false);
+	let recentComics = $state<(FileSystemItem & { metadata?: ComicBook })[]>([]);
+	let storageInfo = $state({ usage: 0, quota: 0, percentage: 0 });
+    let openMenuId = $state<string | null>(null);
 
 	onMount(async () => {
 		try {
 			await comicStorage.init();
 			await loadComics();
 		} catch (error) {
-			console.error('Failed to initialize:', error);
+			logger.error('Home', 'Failed to initialize', error);
+			setError('Failed to initialize application', 'error');
 		}
 	});
 
 	async function loadComics() {
-		recentComics = await comicStorage.getAllComics();
-		recentComics.sort((a, b) => b.lastAccessed - a.lastAccessed);
-		storageInfo = await comicStorage.getStorageEstimate();
+		try {
+			const files = await comicStorage.getRecentFiles(12);
+			
+			// Calculate total usage based on files instead of disk quota
+			let totalUsage = 0;
+			
+			recentComics = await Promise.all(files.map(async file => {
+				const metadata = await comicStorage.getComicMetadata(file.id);
+				if (file.size) totalUsage += file.size;
+				return {
+					...file,
+					metadata: metadata || undefined
+				};
+			}));
+			
+			// Use manually calculated usage to match file sizes
+			const estimate = await comicStorage.getStorageEstimate();
+			storageInfo = {
+				...estimate,
+				usage: totalUsage // Override usage
+			};
+		} catch (err) {
+			logger.error('Home', 'Failed to load comics', err);
+		}
 	}
 
 	onDestroy(() => {
@@ -33,8 +61,7 @@
 		dragActive = true;
 	}
 
-	function handleDragLeave(event: DragEvent) {
-		event.preventDefault();
+	function handleDragLeave() {
 		dragActive = false;
 	}
 
@@ -59,43 +86,95 @@
 		input.value = '';
 	}
 
-	async function openRecentComic(comicMeta: ComicMetadata) {
+	async function openRecentComic(item: FileSystemItem & { metadata?: ComicBook }) {
 		try {
+			logger.info('Home', `Opening comic: ${item.name}`);
 			setLoading(true, 'Loading comic...');
 
-			const storedComic = await comicStorage.getComic(comicMeta.id);
-			if (!storedComic) {
-				alert('Comic not found in storage');
+            const file = await comicStorage.getFile(item.id);
+			if (!file) {
+				logger.warn('Home', `File data not found: ${item.id}`);
+				setError('Comic data not found in storage', 'warning');
 				setLoading(false);
 				return;
 			}
 
-			const file = comicStorage.createFile(storedComic as StoredComic);
-			await openExistingComic(comicMeta.id, file, loadComics);
+			const archiveManager = new ArchiveManager();
+			
+            // Unwrap proxy if it exists
+            let comic: ComicBook | undefined;
+            if (item.metadata) {
+                 comic = JSON.parse(JSON.stringify(item.metadata));
+            }
+			
+			if (!comic || !comic.pages || comic.pages.length === 0) {
+				const pages = await archiveManager.openArchive(file);
+				comic = {
+					id: item.id,
+					title: item.name.replace(/\.(cbz|zip|cbr|rar)$/i, ''),
+					filename: item.name,
+					pages: pages.map(p => ({ filename: p.filename, index: p.index })),
+					currentPage: 0,
+					totalPages: pages.length,
+					lastRead: new Date(),
+                    coverThumbnail: item.thumbnail
+				};
+				await comicStorage.saveComicMetadata(comic);
+			} else {
+				comic.lastRead = new Date();
+				await comicStorage.saveComicMetadata(comic);
+			}
+            
+            if (!comic) throw new Error('Failed to initialize comic metadata');
+
+			await comicStorage.updateLastAccessed(item.id, {
+				currentPage: comic.currentPage ?? 0,
+				totalPages: comic.totalPages
+			});
+
+			setComic(comic, file);
+			logger.info('Home', 'Navigating to reader...');
+			await goto('/reader');
 			
 		} catch (error) {
-			console.error('Failed to open comic:', error);
+			logger.error('Home', 'Failed to open comic', error);
 			setLoading(false);
-			alert('Failed to open comic: ' + (error instanceof Error ? error.message : 'Unknown error'));
+			setError('Failed to open comic: ' + (error instanceof Error ? error.message : 'Unknown error'), 'error');
+		} finally {
+			setTimeout(() => setLoading(false), 500);
 		}
 	}
 	
-	async function deleteComic(comicMeta: ComicMetadata, event: Event) {
-		event.stopPropagation(); // Prevent opening the comic
+	async function deleteComic(item: FileSystemItem, event: MouseEvent) {
+		event.stopPropagation();
+        event.preventDefault();
+        openMenuId = null; // Close menu
 		
-		if (confirm(`Delete "${comicMeta.filename}" from library?`)) {
+		if (confirm(`Delete "${item.name}" from library?`)) {
 			try {
-				// Delete from storage
-				await comicStorage.deleteComic(comicMeta.id);
-				
-				// Reload the list
+                await comicStorage.deleteComic(item.id);
 				await loadComics();
+				logger.info('Home', `Deleted comic: ${item.name}`);
 			} catch (error) {
-				console.error('Failed to delete comic:', error);
-				alert('Failed to delete comic');
+				logger.error('Home', 'Failed to delete comic', error);
+				setError('Failed to delete comic', 'error');
 			}
 		}
 	}
+
+    function toggleMenu(id: string, event: MouseEvent) {
+        event.stopPropagation();
+        event.preventDefault(); 
+        if (openMenuId === id) {
+            openMenuId = null;
+        } else {
+            openMenuId = id;
+        }
+    }
+
+    function closeMenu() {
+        openMenuId = null;
+    }
 	
 	function formatFileSize(bytes: number): string {
 		if (bytes === 0) return '0 Bytes';
@@ -116,30 +195,37 @@
 		if (days < 7) return `${days} days ago`;
 		return date.toLocaleDateString();
 	}
-	
-	function triggerFileInput() {
-		fileInput?.click();
-	}
 </script>
 
 <svelte:head>
-	<title>Online Comic Reader</title>
+	<title>ComiKaiju</title>
 </svelte:head>
+
+<svelte:window onclick={closeMenu} />
 
 <main class="container">
 	<header>
 		<div class="header-content">
-			<h1>Online Comic Reader</h1>
-			{#if recentComics.length > 0}
-				<div class="storage-info">
-					<span class="storage-text">
-						{formatFileSize(storageInfo.usage)} / {formatFileSize(storageInfo.quota)}
-					</span>
-					<div class="storage-bar">
-						<div class="storage-fill" style="width: {Math.min(storageInfo.percentage, 100)}%"></div>
+			<h1>ComiKaiju</h1>
+			<div class="header-actions">
+				{#if recentComics.length > 0}
+					<div class="storage-info">
+						<span class="storage-text">
+							{formatFileSize(storageInfo.usage)} / {formatFileSize(storageInfo.quota)}
+						</span>
+						<div class="storage-bar">
+							<div class="storage-fill" style="width: {Math.min(storageInfo.percentage, 100)}%"></div>
+						</div>
 					</div>
-				</div>
-			{/if}
+				{/if}
+				<ThemeToggle />
+				
+				<a href="/library" class="library-link" aria-label="Go to Library">
+					<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+					</svg>
+				</a>
+			</div>
 		</div>
 	</header>
 	
@@ -151,50 +237,94 @@
 			</div>
 			<div class="bookshelf">
 				<div class="shelf-row">
-					{#each recentComics.slice(0, 12) as comic (comic.id)}
+					{#each recentComics as item (item.id)}
 						<div 
-							class="comic-book" 
-							role="button"
-							tabindex="0"
-							on:click={() => openRecentComic(comic)}
-							on:keydown={(e) => e.key === 'Enter' && openRecentComic(comic)}
-						>
+                            class="comic-book" 
+                            style:z-index={openMenuId === item.id ? 50 : undefined}
+                        >
 							<div class="comic-cover">
-								{#if comic.thumbnail}
-									<img src={comic.thumbnail} alt={comic.filename} />
-								{:else}
-									<div class="placeholder-cover">
-										<div class="placeholder-icon">
-											<svg width="48" height="48" viewBox="0 0 24 24" fill="none">
-												<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" stroke-width="1.5"/>
-												<polyline points="14,2 14,8 20,8" stroke="currentColor" stroke-width="1.5"/>
-											</svg>
-										</div>
-										<div class="placeholder-title">{comic.filename.replace(/\.(cbz|zip|cbr|rar)$/i, '')}</div>
-									</div>
-								{/if}
-								<button 
-									class="delete-btn"
-									on:click={(e) => deleteComic(comic, e)}
-									title="Delete comic"
-								>
-									<svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-										<path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-									</svg>
-								</button>
+                                <!-- Clickable area for cover -->
+                                <div 
+                                    class="cover-action" 
+                                    role="button" 
+                                    tabindex="0" 
+                                    onclick={() => openRecentComic(item)} 
+                                    onkeydown={(e) => e.key === 'Enter' && openRecentComic(item)}
+                                >
+                                    {#if item.thumbnail}
+                                        <img src={item.thumbnail} alt={item.name} />
+                                    {:else}
+                                        <div class="placeholder-cover">
+                                            <div class="placeholder-icon">
+                                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none">
+                                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" stroke-width="1.5"/>
+                                                    <polyline points="14,2 14,8 20,8" stroke="currentColor" stroke-width="1.5"/>
+                                                </svg>
+                                            </div>
+                                            <div class="placeholder-title">{item.name.replace(/\.(cbz|zip|cbr|rar)$/i, '')}</div>
+                                        </div>
+                                    {/if}
+                                    
+                                    {#if item.metadata && item.metadata.totalPages > 0}
+                                        <div class="progress-badge">
+                                            {Math.min(item.metadata.currentPage + 1, item.metadata.totalPages)} / {item.metadata.totalPages}
+                                        </div>
+                                        <div class="progress-bar-container">
+                                            <div 
+                                                class="progress-bar-fill" 
+                                                style="width: {((item.metadata.currentPage + 1) / item.metadata.totalPages) * 100}%"
+                                            ></div>
+                                        </div>
+                                    {/if}
+                                </div>
 							</div>
-						<div class="comic-info">
-							<div class="comic-title">{comic.filename}</div>
-							<div class="comic-meta">
-								<span>{formatFileSize(comic.fileSize)}</span>
-								<span>•</span>
-								<span>{formatDate(comic.lastAccessed)}</span>
-								{#if comic.totalPages > 0}
-									<span>•</span>
-									<span>Page {Math.min(comic.currentPage + 1, comic.totalPages)} / {comic.totalPages}</span>
-								{/if}
-							</div>
-						</div>
+                            
+                            <!-- Info with Menu -->
+                            <div class="comic-info-container">
+                                <div 
+                                    class="comic-info" 
+                                    role="button" 
+                                    tabindex="0" 
+                                    onclick={() => openRecentComic(item)}
+                                    onkeydown={(e) => e.key === 'Enter' && openRecentComic(item)}
+                                >
+                                    <div class="comic-title">{item.name}</div>
+                                    <div class="comic-meta">
+                                        <span>{formatFileSize(item.size || 0)}</span>
+                                        <span>•</span>
+                                        <span>{formatDate(item.updatedAt)}</span>
+                                    </div>
+                                </div>
+
+                                <!-- 3-dot Menu -->
+                                <div class="menu-container">
+                                    <button 
+                                        class="menu-btn"
+                                        onclick={(e) => toggleMenu(item.id, e)}
+                                        aria-label="Options"
+                                    >
+                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="pointer-events-none">
+                                            <circle cx="12" cy="12" r="1" />
+                                            <circle cx="12" cy="5" r="1" />
+                                            <circle cx="12" cy="19" r="1" />
+                                        </svg>
+                                    </button>
+                                    
+                                    {#if openMenuId === item.id}
+                                        <div class="dropdown-menu">
+                                            <button 
+                                                class="dropdown-item delete"
+                                                onclick={(e) => deleteComic(item, e)}
+                                            >
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="pointer-events-none">
+                                                    <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" stroke-linecap="round" stroke-linejoin="round"/>
+                                                </svg>
+                                                Delete
+                                            </button>
+                                        </div>
+                                    {/if}
+                                </div>
+                            </div>
 					</div>
 				{/each}
 				</div>
@@ -216,13 +346,13 @@
 		<div 
 			class="drop-zone"
 			class:active={dragActive}
-			on:dragover={handleDragOver}
-			on:dragleave={handleDragLeave}
-			on:drop={handleDrop}
+			ondragover={handleDragOver}
+			ondragleave={handleDragLeave}
+			ondrop={handleDrop}
 			role="button"
 			tabindex="0"
-			on:click={triggerFileInput}
-			on:keydown={(e) => e.key === 'Enter' && triggerFileInput()}
+			onclick={() => fileInput?.click()}
+			onkeydown={(e) => e.key === 'Enter' && fileInput?.click()}
 		>
 			<div class="drop-content">
 				<div class="upload-icon">
@@ -244,7 +374,7 @@
 			bind:this={fileInput}
 			type="file"
 			accept=".cbz,.zip,.cbr,.rar"
-			on:change={handleFileInput}
+			onchange={handleFileInput}
 			style="display: none;"
 		/>
 	</div>
@@ -254,7 +384,7 @@
 	:global(body) {
 		margin: 0;
 		padding: 0;
-		background: #000000;
+		background-color: var(--color-bg-main);
 	}
 
 	.container {
@@ -262,15 +392,13 @@
 		margin: 0 auto;
 		padding: 2rem;
 		min-height: 100vh;
-		background: #000000;
-		color: #ffffff;
 		display: flex;
 		flex-direction: column;
 	}
 	
 	header {
 		padding: 1rem 0 2rem;
-		border-bottom: 1px solid #111;
+		border-bottom: 1px solid var(--color-border);
 		margin-bottom: 2rem;
 	}
 	
@@ -279,12 +407,30 @@
 		align-items: center;
 		justify-content: space-between;
 	}
+
+	.header-actions {
+		display: flex;
+		align-items: center;
+		gap: 1.5rem;
+	}
+
+	.library-link {
+		color: var(--color-text-main);
+		padding: 0.5rem;
+		border-radius: 9999px;
+		transition: all 0.2s;
+	}
+
+	.library-link:hover {
+		background-color: var(--color-bg-secondary);
+		color: var(--color-primary);
+	}
 	
 	header h1 {
 		font-size: 1.5rem;
 		font-weight: 600;
 		margin: 0;
-		color: #ff6600;
+		color: var(--color-primary);
 	}
 	
 	.storage-info {
@@ -296,20 +442,20 @@
 	
 	.storage-text {
 		font-size: 0.75rem;
-		color: #666;
+		color: var(--color-text-secondary);
 	}
 	
 	.storage-bar {
 		width: 120px;
 		height: 4px;
-		background: #111;
+		background: var(--color-bg-secondary);
 		border-radius: 2px;
 		overflow: hidden;
 	}
 	
 	.storage-fill {
 		height: 100%;
-		background: #ff6600;
+		background: var(--color-primary);
 		transition: width 0.3s ease;
 	}
 	
@@ -319,24 +465,25 @@
 		flex-direction: column;
 		align-items: center;
 		justify-content: center;
-		color: #333;
+		color: var(--color-text-secondary);
 		padding: 4rem 2rem;
 	}
 	
 	.empty-state svg {
 		margin-bottom: 2rem;
 		opacity: 0.2;
+		color: var(--color-text-main);
 	}
 	
 	.empty-state h2 {
 		font-size: 2rem;
 		margin: 0 0 1rem;
-		color: #444;
+		color: var(--color-text-main);
 	}
 	
 	.empty-state p {
 		font-size: 1.1rem;
-		color: #333;
+		color: var(--color-text-secondary);
 		margin: 0;
 	}
 	
@@ -346,13 +493,13 @@
 	}
 	
 	.drop-zone {
-		border: 2px dashed #222;
+		border: 2px dashed var(--color-border);
 		border-radius: 8px;
 		padding: 1.25rem;
 		text-align: center;
 		cursor: pointer;
 		transition: all 0.3s ease;
-		background: #000000;
+		background: var(--color-bg-surface);
 		position: relative;
 		display: flex;
 		align-items: center;
@@ -361,8 +508,8 @@
 	
 	.drop-zone:hover,
 	.drop-zone.active {
-		border-color: #ff6600;
-		background: #0a0a0a;
+		border-color: var(--color-primary);
+		background: var(--color-bg-main);
 	}
 	
 	.drop-content {
@@ -372,24 +519,24 @@
 	}
 	
 	.upload-icon {
-		color: #444;
+		color: var(--color-text-secondary);
 		transition: color 0.3s ease;
 		display: flex;
 		align-items: center;
 	}
 	
 	.drop-zone:hover .upload-icon {
-		color: #ff6600;
+		color: var(--color-primary);
 	}
 	
 	.drop-text {
 		font-size: 1rem;
-		color: #666;
+		color: var(--color-text-secondary);
 		font-weight: 500;
 	}
 	
 	.drop-zone:hover .drop-text {
-		color: #ffffff;
+		color: var(--color-text-main);
 	}
 	
 	.supported-formats {
@@ -399,20 +546,20 @@
 	}
 	
 	.format {
-		background: #111;
-		color: #555;
+		background: var(--color-bg-secondary);
+		color: var(--color-text-secondary);
 		padding: 0.25rem 0.5rem;
 		border-radius: 4px;
 		font-size: 0.75rem;
 		font-weight: 500;
-		border: 1px solid #1a1a1a;
+		border: 1px solid var(--color-border);
 		transition: all 0.3s ease;
 	}
 	
 	.drop-zone:hover .format {
-		background: #1a1a1a;
-		color: #ff6600;
-		border-color: #222;
+		background: var(--color-bg-secondary);
+		color: var(--color-primary);
+		border-color: var(--color-border);
 	}
 	
 	.library {
@@ -426,23 +573,23 @@
 		justify-content: space-between;
 		margin-bottom: 2rem;
 		padding-bottom: 1rem;
-		border-bottom: 1px solid #111;
+		border-bottom: 1px solid var(--color-border);
 	}
 	
 	.library-header h2 {
 		font-size: 1.8rem;
 		margin: 0;
 		font-weight: 600;
-		color: #ffffff;
+		color: var(--color-text-main);
 	}
 	
 	.library-count {
-		color: #666;
+		color: var(--color-text-secondary);
 		font-size: 0.9rem;
-		background: #0a0a0a;
+		background: var(--color-bg-secondary);
 		padding: 0.5rem 1rem;
 		border-radius: 20px;
-		border: 1px solid #111;
+		border: 1px solid var(--color-border);
 	}
 	
 	.bookshelf {
@@ -455,9 +602,9 @@
 		padding: 2rem 1rem 0.5rem;
 		overflow-x: auto;
 		scrollbar-width: thin;
-		scrollbar-color: #222 #000;
+		scrollbar-color: var(--color-border) transparent;
 		position: relative;
-		background: linear-gradient(to bottom, transparent 0%, #000 95%);
+		background: linear-gradient(to bottom, transparent 0%, var(--color-bg-main) 95%);
 	}
 	
 	.shelf-row::-webkit-scrollbar {
@@ -465,20 +612,20 @@
 	}
 	
 	.shelf-row::-webkit-scrollbar-track {
-		background: #000;
+		background: transparent;
 	}
 	
 	.shelf-row::-webkit-scrollbar-thumb {
-		background: #222;
+		background: var(--color-border);
 		border-radius: 4px;
 	}
 	
 	.shelf-support {
 		height: 20px;
 		background: linear-gradient(to bottom, 
-			#1a1a1a 0%, 
-			#111 30%, 
-			#000 100%);
+			var(--color-bg-secondary) 0%, 
+			var(--color-bg-surface) 30%, 
+			var(--color-bg-main) 100%);
 		box-shadow: 
 			0 -2px 10px rgba(0, 0, 0, 0.5),
 			0 2px 5px rgba(0, 0, 0, 0.8),
@@ -486,7 +633,7 @@
 		border-radius: 2px;
 		position: relative;
 	}
-	
+
 	.shelf-support::before {
 		content: '';
 		position: absolute;
@@ -503,21 +650,21 @@
 	.comic-book {
 		min-width: 140px;
 		max-width: 140px;
-		cursor: pointer;
-		transition: transform 0.3s ease;
+		/* Removed cursor pointer here to indicate no action on container */
 		position: relative;
 		transform-style: preserve-3d;
+        transition: transform 0.3s ease; /* Moved transition to container for hover effect */
 	}
 	
 	.comic-book:hover {
-		transform: translateY(-10px) rotateY(-5deg) scale(1.05);
+		transform: translateY(-5px); 
 		z-index: 10;
 	}
 	
 	.comic-cover {
 		width: 140px;
 		height: 210px;
-		background: #000;
+		background: var(--color-bg-surface);
 		border-radius: 4px;
 		overflow: hidden;
 		position: relative;
@@ -525,9 +672,14 @@
 			-5px 0 15px rgba(0, 0, 0, 0.8),
 			2px 2px 5px rgba(0, 0, 0, 0.6),
 			0 0 40px rgba(0, 0, 0, 0.5);
-		border: 1px solid #111;
-		background: linear-gradient(135deg, #111 0%, #000 100%);
+		border: 1px solid var(--color-border);
 	}
+    
+    .cover-action {
+        width: 100%;
+        height: 100%;
+        cursor: pointer;
+    }
 	
 	.comic-cover::before {
 		content: '';
@@ -541,8 +693,9 @@
 			rgba(0, 0, 0, 0.6) 50%,
 			rgba(0, 0, 0, 0.4) 100%);
 		z-index: 2;
+        pointer-events: none; /* Pass clicks through overlays */
 	}
-	
+
 	.comic-cover::after {
 		content: '';
 		position: absolute;
@@ -554,7 +707,7 @@
 			rgba(255, 255, 255, 0) 40%,
 			rgba(255, 255, 255, 0.05) 45%,
 			rgba(255, 255, 255, 0) 50%);
-		pointer-events: none;
+		pointer-events: none; /* Pass clicks through overlays */
 	}
 	
 	.comic-cover img {
@@ -563,6 +716,35 @@
 		object-fit: cover;
 		display: block;
 	}
+
+    .progress-bar-container {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        height: 4px;
+        background: rgba(0, 0, 0, 0.3);
+        z-index: 3;
+    }
+
+    .progress-bar-fill {
+        height: 100%;
+        background: var(--color-primary);
+    }
+    
+    .progress-badge {
+        position: absolute;
+        bottom: 0.5rem;
+        left: 0.5rem;
+        background: rgba(0, 0, 0, 0.8);
+        color: var(--color-primary);
+        padding: 0.2rem 0.5rem;
+        border-radius: 4px;
+        font-size: 0.65rem;
+        font-weight: 700;
+        z-index: 4; /* Increased from 2 to be above the cover overlays if any */
+        border: 1px solid var(--color-primary);
+    }
 	
 	.placeholder-cover {
 		width: 100%;
@@ -571,7 +753,7 @@
 		flex-direction: column;
 		align-items: center;
 		justify-content: center;
-		background: linear-gradient(135deg, #ff6600 0%, #ff8833 100%);
+		background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-hover) 100%);
 		color: white;
 		padding: 1rem;
 		text-align: center;
@@ -593,58 +775,104 @@
 		-webkit-line-clamp: 3;
 		-webkit-box-orient: vertical;
 	}
-	
-	.delete-btn {
-		position: absolute;
-		top: 0.5rem;
-		right: 0.5rem;
-		background: rgba(0, 0, 0, 0.8);
-		border: 1px solid rgba(255, 255, 255, 0.1);
-		color: #ff4444;
-		width: 32px;
-		height: 32px;
-		border-radius: 4px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		cursor: pointer;
-		opacity: 0;
-		transition: all 0.2s ease;
-		z-index: 3;
-	}
-	
-	.comic-book:hover .delete-btn {
-		opacity: 1;
-	}
-	
-	.delete-btn:hover {
-		background: rgba(255, 68, 68, 0.2);
-		border-color: #ff4444;
-	}
+    
+    .comic-info-container {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 0.75rem;
+    }
 	
 	.comic-info {
-		margin-top: 0.75rem;
-		text-align: center;
+        flex: 1;
+        min-width: 0;
+        text-align: left;
+        cursor: pointer;
+        padding-right: 0.5rem;
 	}
 	
 	.comic-info .comic-title {
 		font-size: 0.85rem;
 		font-weight: 600;
-		color: #ffffff;
+		color: var(--color-text-main);
 		margin-bottom: 0.25rem;
-		white-space: nowrap;
+		white-space: normal; /* Was nowrap */
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
 		overflow: hidden;
-		text-overflow: ellipsis;
+		/* text-overflow: ellipsis; Removed since we wrap */
+        line-height: 1.2;
+        height: 2.4em; /* Enforce height for alignment */
 	}
 	
 	.comic-info .comic-meta {
 		font-size: 0.7rem;
-		color: #666;
+		color: var(--color-text-muted);
 		display: flex;
 		align-items: center;
-		justify-content: center;
+		justify-content: flex-start;
 		gap: 0.5rem;
 	}
+    
+    .menu-container {
+        position: relative;
+        z-index: 10; /* Ensure menu is above other elements in the info section */
+    }
+    
+    .menu-btn {
+        background: transparent;
+        border: none;
+        color: var(--color-text-secondary);
+        padding: 0.25rem;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+    
+    .menu-btn:hover {
+        background: var(--color-bg-secondary);
+        color: var(--color-text-main);
+    }
+    
+    .dropdown-menu {
+        position: absolute;
+        bottom: calc(100% + 5px); /* Position above the button, on top of comic */
+        right: 0;
+        width: 120px;
+        background: var(--color-bg-surface);
+        border: 1px solid var(--color-border);
+        border-radius: 8px;
+        box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3), 0 4px 6px rgba(0, 0, 0, 0.1);
+        z-index: 100; /* High z-index to be on top of everything */
+        overflow: hidden;
+    }
+    
+    .dropdown-item {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        width: 100%;
+        padding: 0.75rem 1rem;
+        font-size: 0.85rem;
+        background: transparent;
+        border: none;
+        color: var(--color-text-main);
+        cursor: pointer;
+        text-align: left;
+        transition: background 0.2s;
+    }
+    
+    .dropdown-item:hover {
+        background: var(--color-bg-secondary);
+    }
+    
+    .dropdown-item.delete {
+        color: var(--color-status-error);
+    }
+    
+    .dropdown-item.delete:hover {
+        background: rgba(239, 68, 68, 0.1);
+    }
 	
 	@media (max-width: 768px) {
 		.container {

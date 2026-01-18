@@ -1,9 +1,9 @@
 > [!IMPORTANT]
 > This is a pilot project to experiment with AI and see if it's viable to create at least semi-AI managed project reliably, hence it includes almost exclusively AI code, as well as AI automations.
 
-# Online Comic Reader
+# ComiKaiju
 
-Online Comic Reader is a SvelteKit application for reading CBZ/CBR comics directly in your browser. It uses client-side web workers to quickly extract archives, allowing you to read your comics offline. Your library and reading progress are stored locally in your browser using IndexedDB.
+ComiKaiju is a SvelteKit application for reading CBZ/CBR comics directly in your browser. It uses client-side web workers to quickly extract archives, allowing you to read your comics offline. Your library and reading progress are stored locally in your browser using IndexedDB.
 
 This application does not host or distribute any comic book files. Users are solely responsible for the content they choose to open.
 
