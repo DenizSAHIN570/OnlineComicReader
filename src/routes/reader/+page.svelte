@@ -195,6 +195,7 @@ function structuredCloneComic(comic: ComicBook): ComicBook {
 
 <svelte:head>
 	<title>{comic?.title || 'Reading'} - ComiKaiju</title>
+	<meta name="description" content="Read your comic books in an immersive, offline-first browser-based reader. Enjoy your CBZ/CBR collection with optimal performance." />
 </svelte:head>
 
 {#if $error}
