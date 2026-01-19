@@ -168,6 +168,7 @@
 
 <svelte:head>
 	<title>Library - ComiKaiju</title>
+	<meta name="description" content="Browse your imported comic book library. All comics are stored locally on your device." />
 </svelte:head>
 
 <div class="library-container">
