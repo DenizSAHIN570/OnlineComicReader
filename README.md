@@ -1,4 +1,4 @@
-[![Netlify Status](https://api.netlify.com/api/v1/badges/5459d454-7f89-4ff9-aace-36678ab62782/deploy-status)](https://app.netlify.com/projects/onlinecomicbookreader/deploys)
+[![Netlify Status](https://api.netlify.com/api/v1/badges/5459d454-7f89-4ff9-aace-36678ab62782/deploy-status)](https://app.netlify.com/projects/comikaiju/deploys)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![code style: prettier](https://img.shields.io/badge/code_style-prettier-ff69b4.svg?style=flat-square)](https://github.com/prettier/prettier)
 ![Built with Svelte](https://img.shields.io/badge/Svelte-4E4E55?style=for-the-badge&logo=svelte&logoColor=FF3E00)
